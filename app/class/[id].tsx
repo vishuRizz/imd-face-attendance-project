@@ -16,7 +16,9 @@ import {
   getStudentsForClass,
   deleteStudent,
   deleteClass,
+  getAttendanceHistory,
   type StudentWithEmbeddings,
+  type AttendanceWithRecords,
 } from '@/lib/database/db';
 import type { Class } from '@/lib/database/schema';
 import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
@@ -29,16 +31,19 @@ export default function ClassScreen() {
 
   const [cls, setCls] = useState<Class | null>(null);
   const [students, setStudents] = useState<StudentWithEmbeddings[]>([]);
+  const [history, setHistory] = useState<AttendanceWithRecords[]>([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     try {
-      const [classData, studentData] = await Promise.all([
+      const [classData, studentData, historyData] = await Promise.all([
         getClassById(classId),
         getStudentsForClass(classId),
+        getAttendanceHistory(classId),
       ]);
       setCls(classData);
       setStudents(studentData);
+      setHistory(historyData);
       navigation.setOptions({ title: classData.name });
     } catch (e) {
       console.error(e);
@@ -174,6 +179,30 @@ export default function ClassScreen() {
         }
         ListFooterComponent={
           <View style={styles.footer}>
+            {/* History Section */}
+            {history.length > 0 && (
+              <View style={styles.historySection}>
+                <Text style={styles.sectionLabel}>RECENT HISTORY</Text>
+                {history.map(session => (
+                  <TouchableOpacity
+                    key={session.id}
+                    style={styles.historyCard}
+                    onPress={() => router.push(`/attendance/review/${session.id}`)}
+                  >
+                    <View style={styles.historyInfo}>
+                      <Text style={styles.historyDate}>
+                        {new Date(session.date).toLocaleDateString()} at {new Date(session.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                      <Text style={styles.historyStats}>
+                        {session.records.filter(r => r.status === 'present').length} Present • {session.records.filter(r => r.status === 'absent').length} Absent
+                      </Text>
+                    </View>
+                    <Text style={styles.chevron}>›</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
             <TouchableOpacity
               id="btn-delete-class"
               style={styles.dangerButton}
@@ -304,6 +333,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: Colors.danger + '50',
+    marginTop: Spacing.lg,
   },
   dangerButtonText: { ...Typography.body, color: Colors.danger, fontWeight: '600' },
   fab: {
@@ -322,4 +352,23 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   fabText: { ...Typography.heading3, color: '#0D0D1A' },
+  historySection: {
+    marginTop: Spacing.md,
+    marginBottom: Spacing.lg,
+  },
+  historyCard: {
+    backgroundColor: Colors.bgCard,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.xs,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  historyInfo: { flex: 1 },
+  historyDate: { ...Typography.body, color: Colors.textPrimary, fontWeight: '600' },
+  historyStats: { ...Typography.caption, color: Colors.textSecondary, marginTop: 2 },
+  chevron: { fontSize: 24, color: Colors.textMuted },
 });
