@@ -276,7 +276,7 @@ class FaceMLModule : Module() {
         val result = FloatArray(3 * h * w)
         val area = h * w
 
-        for (i in 0 until area) {
+                for (i in 0 until area) {
             val pixel = pixels[i]
             val r = ((pixel shr 16) and 0xFF).toFloat()
             val g = ((pixel shr 8) and 0xFF).toFloat()
@@ -298,59 +298,54 @@ class FaceMLModule : Module() {
     ): List<FaceDetection> {
         val faces = mutableListOf<FaceDetection>()
 
-        // SCRFD with KPS produces 3 output heads for each of 3 feature map strides (8, 16, 32)
-        // For simplicity: iterate over all output tensors and parse them
-        val outputNames = outputs.map { it.key }
+        // InsightFace SCRFD with KPS exports exactly 9 outputs (or 6 without KPS).
+        // Regardless of output name (which can be numeric like "286"), order is fixed:
+        //   [0] score_stride_8  — shape [1, H*W*2, 1]
+        //   [1] score_stride_16
+        //   [2] score_stride_32
+        //   [3] bbox_stride_8   — shape [1, H*W*2, 4]
+        //   [4] bbox_stride_16
+        //   [5] bbox_stride_32
+        //   [6] kps_stride_8    — shape [1, H*W*2, 10]  (optional)
+        //   [7] kps_stride_16
+        //   [8] kps_stride_32
 
-        // Group outputs: score maps, bbox maps, landmark maps
-        // Order depends on SCRFD model export. Standard ONNX export typically:
-        // score_8, score_16, score_32, bbox_8, bbox_16, bbox_32, kps_8, kps_16, kps_32
+        val outputList = outputs.map { it.value }.toList()
+        val numOutputs = outputList.size
+        val hasKPS = numOutputs >= 9
+
         val strides = intArrayOf(8, 16, 32)
-        val inputSize = DETECTOR_INPUT_SIZE
 
         for ((idx, stride) in strides.withIndex()) {
             try {
-                val scoreKey = outputNames.find { it.contains("score") && outputNames.indexOf(it) == idx }
-                    ?: outputNames.getOrNull(idx) ?: continue
-                val bboxKey = outputNames.find { it.contains("bbox") && outputNames.indexOf(it) == idx + 3 }
-                    ?: outputNames.getOrNull(idx + 3) ?: continue
-                val kpsKey = outputNames.find { it.contains("kps") || it.contains("landmark") }
-                    ?.let { outputNames.getOrNull(idx + 6) } ?: outputNames.getOrNull(idx + 6)
-
-                val scoresTensor = outputs[scoreKey].get() as? OnnxTensor ?: continue
-                val bboxTensor = outputs[bboxKey].get() as? OnnxTensor ?: continue
+                val scoresTensor = outputList.getOrNull(idx) as? OnnxTensor ?: continue
+                val bboxTensor   = outputList.getOrNull(idx + 3) as? OnnxTensor ?: continue
+                val kpsTensor    = if (hasKPS) outputList.getOrNull(idx + 6) as? OnnxTensor else null
 
                 val scoresData = scoresTensor.floatBuffer.array()
-                val bboxData = bboxTensor.floatBuffer.array()
-                val kpsData = if (kpsKey != null) {
-                    (outputs[kpsKey].get() as? OnnxTensor)?.floatBuffer?.array()
-                } else null
+                val bboxData   = bboxTensor.floatBuffer.array()
+                val kpsData    = kpsTensor?.floatBuffer?.array()
 
-                val fmH = inputSize / stride
-                val fmW = inputSize / stride
-                val numAnchors = 2 // SCRFD uses 2 anchors per location
+                val fmH = DETECTOR_INPUT_SIZE / stride
+                val fmW = DETECTOR_INPUT_SIZE / stride
+                val numAnchors = 2
 
                 for (i in 0 until fmH * fmW * numAnchors) {
                     val score = scoresData.getOrElse(i) { 0f }
                     if (score < CONFIDENCE_THRESHOLD) continue
 
-                    val anchorIdx = i
-                    val row = (anchorIdx / numAnchors) / fmW
-                    val col = (anchorIdx / numAnchors) % fmW
-                    val anchor = anchorIdx % numAnchors
+                    val row    = (i / numAnchors) / fmW
+                    val col    = (i / numAnchors) % fmW
 
-                    // Anchor center in feature map coordinates
                     val cx = (col + 0.5f) * stride
                     val cy = (row + 0.5f) * stride
 
-                    // Decode bbox (SCRFD regresses to distances from anchor center)
-                    val bboxOffset = anchorIdx * 4
-                    val x1 = cx - bboxData.getOrElse(bboxOffset) { 0f } * stride
+                    val bboxOffset = i * 4
+                    val x1 = cx - bboxData.getOrElse(bboxOffset)     { 0f } * stride
                     val y1 = cy - bboxData.getOrElse(bboxOffset + 1) { 0f } * stride
                     val x2 = cx + bboxData.getOrElse(bboxOffset + 2) { 0f } * stride
                     val y2 = cy + bboxData.getOrElse(bboxOffset + 3) { 0f } * stride
 
-                    // Map back to original image coordinates
                     val origX1 = ((x1 - padX) / scale).coerceIn(0f, origWidth.toFloat())
                     val origY1 = ((y1 - padY) / scale).coerceIn(0f, origHeight.toFloat())
                     val origX2 = ((x2 - padX) / scale).coerceIn(0f, origWidth.toFloat())
@@ -358,27 +353,27 @@ class FaceMLModule : Module() {
 
                     val box = RectF(origX1, origY1, origX2, origY2)
 
-                    // Decode landmarks
                     val landmarks = mutableListOf<PointF>()
                     if (kpsData != null) {
-                        val kpsOffset = anchorIdx * 10
+                        val kpsOffset = i * 10
                         for (k in 0 until 5) {
-                            val lx = ((kpsData.getOrElse(kpsOffset + k * 2) { 0f } * stride - padX) / scale)
+                            val lx = ((kpsData.getOrElse(kpsOffset + k * 2)     { 0f } * stride - padX) / scale)
                                 .coerceIn(0f, origWidth.toFloat())
                             val ly = ((kpsData.getOrElse(kpsOffset + k * 2 + 1) { 0f } * stride - padY) / scale)
-                                .coerceIn(0f, origHeight.toFloat())
+                                .coerceIn(0f, origWidth.toFloat())
                             landmarks.add(PointF(lx, ly))
                         }
                     } else {
-                        // Fallback: use box corners as landmarks
-                        val cx2 = (origX1 + origX2) / 2
-                        val cy2 = (origY1 + origY2) / 2
+                        // Fallback geometric landmarks
+                        val cxOrig = (origX1 + origX2) / 2
+                        val cyOrig = (origY1 + origY2) / 2
+                        val w = origX2 - origX1; val h = origY2 - origY1
                         landmarks.addAll(listOf(
-                            PointF(origX1 + (origX2 - origX1) * 0.3f, origY1 + (origY2 - origY1) * 0.35f),
-                            PointF(origX1 + (origX2 - origX1) * 0.7f, origY1 + (origY2 - origY1) * 0.35f),
-                            PointF(cx2, cy2),
-                            PointF(origX1 + (origX2 - origX1) * 0.35f, origY1 + (origY2 - origY1) * 0.65f),
-                            PointF(origX1 + (origX2 - origX1) * 0.65f, origY1 + (origY2 - origY1) * 0.65f)
+                            PointF(origX1 + w * 0.30f, origY1 + h * 0.35f), // left eye
+                            PointF(origX1 + w * 0.70f, origY1 + h * 0.35f), // right eye
+                            PointF(cxOrig,             origY1 + h * 0.55f), // nose
+                            PointF(origX1 + w * 0.35f, origY1 + h * 0.70f), // left mouth
+                            PointF(origX1 + w * 0.65f, origY1 + h * 0.70f)  // right mouth
                         ))
                     }
 
@@ -387,7 +382,7 @@ class FaceMLModule : Module() {
                     }
                 }
             } catch (e: Exception) {
-                // Skip problematic output
+                // Skip stride on error
             }
         }
         return faces
