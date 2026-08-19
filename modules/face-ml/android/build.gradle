@@ -1,5 +1,5 @@
 apply plugin: 'com.android.library'
-apply plugin: 'kotlin-android'
+apply plugin: 'org.jetbrains.kotlin.android'
 apply plugin: 'expo-module'
 
 android {
@@ -9,6 +9,10 @@ android {
         targetSdk 35
     }
     namespace "expo.modules.faceml"
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
 }
 
 repositories {
@@ -17,8 +21,10 @@ repositories {
 }
 
 dependencies {
+    // ONNX Runtime for face detection + recognition
     implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.18.0'
-    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.23'
-    compileOnly 'com.facebook.react:react-android'
+
+    // expo-modules-core is provided by the host app — compile-only
     compileOnly project(':expo-modules-core')
+    compileOnly 'com.facebook.react:react-android'
 }

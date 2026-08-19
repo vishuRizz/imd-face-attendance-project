@@ -1,0 +1,7 @@
+{
+  "name": "face-ml",
+  "platforms": ["android"],
+  "android": {
+    "modules": ["expo.modules.faceml.FaceMLModule"]
+  }
+}
