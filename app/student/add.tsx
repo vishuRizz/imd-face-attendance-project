@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { createStudent } from '@/lib/database/db';
 import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
 
@@ -47,8 +48,9 @@ export default function AddStudentScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={styles.heading}>Add Student</Text>
-        <Text style={styles.subheading}>After saving, you'll be taken to enroll their face.</Text>
+        <View style={styles.heroIcon}><Ionicons name="person-add" size={24} color={Colors.accent} /></View>
+        <Text style={styles.heading}>Add a student</Text>
+        <Text style={styles.subheading}>Save their details, then capture a few quick face references.</Text>
 
         <View style={styles.form}>
           <FormField id="input-name" label="Full Name *" placeholder="e.g. Rahul Sharma" value={name} onChangeText={setName} />
@@ -57,9 +59,8 @@ export default function AddStudentScreen() {
         </View>
 
         <View style={styles.note}>
-          <Text style={styles.noteText}>
-            💡 You'll be asked to capture 5 face photos immediately after saving.
-          </Text>
+          <Ionicons name="sparkles" size={18} color={Colors.primaryLight} />
+          <Text style={styles.noteText}>You’ll capture 5 quick face references immediately after saving.</Text>
         </View>
 
         <TouchableOpacity
@@ -72,7 +73,7 @@ export default function AddStudentScreen() {
           {saving ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.saveButtonText}>Save & Enroll Face →</Text>
+            <><Text style={styles.saveButtonText}>Save & enroll face</Text><Ionicons name="arrow-forward" size={18} color={Colors.textOnPrimary} /></>
           )}
         </TouchableOpacity>
       </ScrollView>
@@ -116,12 +117,13 @@ const fieldStyles = StyleSheet.create({
     color: Colors.textPrimary,
     ...Typography.body,
   },
-  focused: { borderColor: Colors.borderFocus },
+  focused: { borderColor: Colors.borderFocus, shadowColor: Colors.primary, shadowOpacity: 0.16, shadowRadius: 8 },
 });
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bg },
-  content: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
+  content: { padding: Spacing.lg, paddingTop: Spacing.xl, paddingBottom: Spacing.xxl },
+  heroIcon: { width: 52, height: 52, borderRadius: Radius.lg, backgroundColor: Colors.accent + '18', justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.lg },
   heading: { ...Typography.heading2, color: Colors.textPrimary, marginBottom: Spacing.xs },
   subheading: { ...Typography.body, color: Colors.textSecondary, marginBottom: Spacing.xl },
   form: { marginBottom: Spacing.lg },
@@ -132,13 +134,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.primary + '30',
     marginBottom: Spacing.xl,
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    alignItems: 'center',
   },
-  noteText: { ...Typography.bodySmall, color: Colors.primaryLight },
+  noteText: { ...Typography.bodySmall, color: Colors.primaryLight, flex: 1 },
   saveButton: {
     backgroundColor: Colors.primary,
     borderRadius: Radius.lg,
     paddingVertical: Spacing.md,
     alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: Spacing.sm,
     shadowColor: Colors.primary,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.4,

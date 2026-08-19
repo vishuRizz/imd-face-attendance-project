@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { createClass } from '@/lib/database/db';
 import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
 
@@ -39,8 +40,9 @@ export default function CreateClassScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={styles.heading}>Create New Class</Text>
-        <Text style={styles.subheading}>Set up a new class to enroll students and track attendance</Text>
+        <View style={styles.heroIcon}><Ionicons name="school" size={25} color={Colors.primaryLight} /></View>
+        <Text style={styles.heading}>Create a class</Text>
+        <Text style={styles.subheading}>Set up the space where you’ll enroll students and record attendance.</Text>
 
         <View style={styles.form}>
           <FormField
@@ -67,7 +69,7 @@ export default function CreateClassScreen() {
         </View>
 
         <View style={styles.preview}>
-          <Text style={styles.previewLabel}>PREVIEW</Text>
+          <Text style={styles.previewLabel}>CLASS PREVIEW</Text>
           <View style={styles.previewCard}>
             <View style={styles.previewIcon}>
               <Text style={styles.previewIconText}>
@@ -93,7 +95,7 @@ export default function CreateClassScreen() {
           {saving ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.createButtonText}>Create Class</Text>
+            <><Text style={styles.createButtonText}>Create class</Text><Ionicons name="arrow-forward" size={18} color={Colors.textOnPrimary} /></>
           )}
         </TouchableOpacity>
       </ScrollView>
@@ -147,12 +149,16 @@ const fieldStyles = StyleSheet.create({
   },
   inputFocused: {
     borderColor: Colors.borderFocus,
+    shadowColor: Colors.primary,
+    shadowOpacity: 0.16,
+    shadowRadius: 8,
   },
 });
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bg },
-  content: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
+  content: { padding: Spacing.lg, paddingTop: Spacing.xl, paddingBottom: Spacing.xxl },
+  heroIcon: { width: 52, height: 52, borderRadius: Radius.lg, backgroundColor: Colors.primary + '20', justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.lg },
   heading: { ...Typography.heading2, color: Colors.textPrimary, marginBottom: Spacing.xs },
   subheading: { ...Typography.body, color: Colors.textSecondary, marginBottom: Spacing.xl },
   form: { marginBottom: Spacing.lg },
@@ -186,6 +192,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingVertical: Spacing.md,
     alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: Spacing.sm,
     shadowColor: Colors.primary,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.4,

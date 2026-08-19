@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useNavigation } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import {
   getClassById,
   getStudentsForClass,
@@ -50,7 +51,7 @@ export default function ClassScreen() {
     } finally {
       setLoading(false);
     }
-  }, [classId]);
+  }, [classId, navigation]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -105,7 +106,8 @@ export default function ClassScreen() {
       <View style={styles.studentActions}>
         {item.isEnrolled ? (
           <View style={styles.enrolledBadge}>
-            <Text style={styles.enrolledBadgeText}>✓ Enrolled</Text>
+          <Ionicons name="checkmark-circle" size={14} color={Colors.success} />
+          <Text style={styles.enrolledBadgeText}>Enrolled</Text>
           </View>
         ) : (
           <TouchableOpacity
@@ -121,7 +123,7 @@ export default function ClassScreen() {
           onPress={() => handleDeleteStudent(item)}
           style={styles.deleteIcon}
         >
-          <Text style={styles.deleteIconText}>🗑</Text>
+          <Ionicons name="trash-outline" size={18} color={Colors.textMuted} />
         </TouchableOpacity>
       </View>
     </View>
@@ -159,7 +161,7 @@ export default function ClassScreen() {
               disabled={!canScan}
               activeOpacity={0.85}
             >
-              <Text style={styles.scanButtonIcon}>📷</Text>
+              <Ionicons name="scan-outline" size={21} color={Colors.textOnPrimary} />
               <Text style={styles.scanButtonText}>Scan Attendance</Text>
             </TouchableOpacity>
 
@@ -172,7 +174,7 @@ export default function ClassScreen() {
         }
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Text style={styles.emptyIcon}>👤</Text>
+            <View style={styles.emptyIcon}><Ionicons name="people-outline" size={28} color={Colors.primaryLight} /></View>
             <Text style={styles.emptyText}>No students yet</Text>
             <Text style={styles.emptySubtext}>Add your first student below</Text>
           </View>
@@ -197,7 +199,7 @@ export default function ClassScreen() {
                         {session.records.filter(r => r.status === 'present').length} Present • {session.records.filter(r => r.status === 'absent').length} Absent
                       </Text>
                     </View>
-                    <Text style={styles.chevron}>›</Text>
+                    <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
                   </TouchableOpacity>
                 ))}
               </View>
@@ -221,7 +223,8 @@ export default function ClassScreen() {
         onPress={() => router.push({ pathname: '/student/add', params: { classId: classId.toString() } })}
         activeOpacity={0.85}
       >
-        <Text style={styles.fabText}>+ Add Student</Text>
+        <Ionicons name="person-add-outline" size={19} color={Colors.bg} />
+        <Text style={styles.fabText}>Add student</Text>
       </TouchableOpacity>
     </SafeAreaView>
   );
@@ -270,7 +273,6 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   scanButtonDisabled: { opacity: 0.4, shadowOpacity: 0 },
-  scanButtonIcon: { fontSize: 18 },
   scanButtonText: { ...Typography.heading3, color: Colors.textOnPrimary },
   scanHint: {
     ...Typography.caption,
@@ -321,9 +323,8 @@ const styles = StyleSheet.create({
   },
   enrollButtonText: { ...Typography.caption, color: Colors.textOnPrimary, fontWeight: '700' },
   deleteIcon: { padding: Spacing.xs },
-  deleteIconText: { fontSize: 16 },
   empty: { alignItems: 'center', paddingVertical: Spacing.xl },
-  emptyIcon: { fontSize: 48, marginBottom: Spacing.sm },
+  emptyIcon: { width: 60, height: 60, borderRadius: Radius.xl, backgroundColor: Colors.primary + '18', justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.md },
   emptyText: { ...Typography.heading3, color: Colors.textSecondary },
   emptySubtext: { ...Typography.bodySmall, color: Colors.textMuted },
   footer: { paddingTop: Spacing.xl },
@@ -331,6 +332,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingVertical: Spacing.md,
     alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: Spacing.xs,
     borderWidth: 1,
     borderColor: Colors.danger + '50',
     marginTop: Spacing.lg,
@@ -345,6 +349,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingVertical: Spacing.md,
     alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: Spacing.xs,
     shadowColor: Colors.accent,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.4,
@@ -370,5 +377,4 @@ const styles = StyleSheet.create({
   historyInfo: { flex: 1 },
   historyDate: { ...Typography.body, color: Colors.textPrimary, fontWeight: '600' },
   historyStats: { ...Typography.caption, color: Colors.textSecondary, marginTop: 2 },
-  chevron: { fontSize: 24, color: Colors.textMuted },
 });

@@ -1,4 +1,6 @@
-import * as FileSystem from 'expo-file-system';
+// Model setup uses the URI-based APIs. In Expo SDK 54 those APIs live in the
+// legacy entry point; the default module exposes the newer File/Directory API.
+import * as FileSystem from 'expo-file-system/legacy';
 import {
   initModels,
   detectAndEmbedFaces,

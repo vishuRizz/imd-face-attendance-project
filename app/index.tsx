@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { getAllClasses, type ClassWithStats } from '@/lib/database/db';
 import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
 
@@ -63,7 +64,7 @@ export default function DashboardScreen() {
           </Text>
         </View>
         <View style={styles.chevron}>
-          <Text style={styles.chevronText}>›</Text>
+          <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
         </View>
       </View>
       <View style={styles.cardStats}>
@@ -96,11 +97,13 @@ export default function DashboardScreen() {
       {/* Header */}
       <View style={styles.header}>
         <View>
+          <Text style={styles.eyebrow}>GOOD TO SEE YOU</Text>
           <Text style={styles.appName}>FaceScan</Text>
-          <Text style={styles.subtitle}>Attendance System</Text>
+          <Text style={styles.subtitle}>Attendance, made effortless.</Text>
         </View>
         <View style={styles.headerBadge}>
-          <Text style={styles.headerBadgeText}>OFFLINE</Text>
+          <View style={styles.statusDot} />
+          <Text style={styles.headerBadgeText}>PRIVATE & OFFLINE</Text>
         </View>
       </View>
 
@@ -118,7 +121,7 @@ export default function DashboardScreen() {
         }
         ListEmptyComponent={
           <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>🏫</Text>
+            <View style={styles.emptyIcon}><Ionicons name="school-outline" size={32} color={Colors.primaryLight} /></View>
             <Text style={styles.emptyTitle}>No Classes Yet</Text>
             <Text style={styles.emptySubtitle}>
               Create your first class to start taking attendance
@@ -141,7 +144,8 @@ export default function DashboardScreen() {
         onPress={() => router.push('/class/create')}
         activeOpacity={0.85}
       >
-        <Text style={styles.fabText}>+ New Class</Text>
+        <Ionicons name="add" size={20} color={Colors.textOnPrimary} />
+        <Text style={styles.fabText}>New class</Text>
       </TouchableOpacity>
     </SafeAreaView>
   );
@@ -171,13 +175,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.xl,
+    paddingTop: Spacing.xxl,
     paddingBottom: Spacing.lg,
   },
   appName: {
     ...Typography.heading1,
     color: Colors.textPrimary,
   },
+  eyebrow: { ...Typography.label, color: Colors.primaryLight, marginBottom: Spacing.xs },
   subtitle: {
     ...Typography.bodySmall,
     color: Colors.textSecondary,
@@ -191,6 +196,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.success + '40',
   },
+  statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.success, marginRight: 6 },
   headerBadgeText: {
     ...Typography.label,
     color: Colors.success,
@@ -212,7 +218,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.bgCard,
     borderRadius: Radius.lg,
     padding: Spacing.md,
-    marginBottom: Spacing.sm,
+    marginBottom: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.border,
   },
@@ -297,7 +303,12 @@ const styles = StyleSheet.create({
     paddingTop: '30%',
   },
   emptyIcon: {
-    fontSize: 64,
+    width: 72,
+    height: 72,
+    borderRadius: Radius.xl,
+    backgroundColor: Colors.primary + '18',
+    justifyContent: 'center',
+    alignItems: 'center',
     marginBottom: Spacing.md,
   },
   emptyTitle: {
@@ -320,6 +331,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingVertical: Spacing.md,
     alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: Spacing.xs,
     shadowColor: Colors.primary,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.4,

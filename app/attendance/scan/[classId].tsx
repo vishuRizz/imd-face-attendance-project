@@ -12,6 +12,7 @@ import {
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import {
   createAttendanceSession,
   saveAttendanceRecords,
@@ -19,7 +20,6 @@ import {
   getStudentsForClass,
 } from '@/lib/database/db';
 import { processGroupPhoto } from '@/lib/ml/FaceMLClient';
-import type { FaceMatchResult } from '@/lib/ml/FaceMLClient';
 import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
 
 type ScanState = 'idle' | 'capturing' | 'processing' | 'done' | 'error';
@@ -68,7 +68,7 @@ export default function ScanScreen() {
       const students = await getStudentsForClass(Number(classId));
 
       setProcessStatus(`Detecting faces in photo...`);
-      const { results, imageWidth, imageHeight } = await processGroupPhoto(uri, rawEmbeddings);
+      const { results } = await processGroupPhoto(uri, rawEmbeddings);
 
       setProcessStatus('Matching faces to students...');
 
@@ -133,7 +133,7 @@ export default function ScanScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.center}>
-          <Text style={{ fontSize: 48, marginBottom: 16 }}>📷</Text>
+          <View style={styles.permissionIcon}><Ionicons name="camera-outline" size={30} color={Colors.primaryLight} /></View>
           <Text style={styles.permTitle}>Camera Permission Needed</Text>
           <TouchableOpacity style={styles.permBtn} onPress={requestPermission}>
             <Text style={styles.permBtnText}>Allow Camera</Text>
@@ -177,8 +177,12 @@ export default function ScanScreen() {
       {/* Top bar */}
       <SafeAreaView style={styles.topBar}>
         <View style={styles.topBarContent}>
-          <Text style={styles.topTitle}>Scan Attendance</Text>
-          <Text style={styles.topHint}>Fit all students in frame</Text>
+          <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}><Ionicons name="close" size={22} color="#fff" /></TouchableOpacity>
+          <View>
+            <Text style={styles.topTitle}>Scan attendance</Text>
+            <Text style={styles.topHint}>Fit all students in frame</Text>
+          </View>
+          <View style={styles.liveBadge}><View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text></View>
         </View>
       </SafeAreaView>
 
@@ -191,7 +195,7 @@ export default function ScanScreen() {
           onPress={handleGallery}
           disabled={state === 'capturing'}
         >
-          <Text style={styles.galleryIcon}>🖼</Text>
+          <View style={styles.galleryIcon}><Ionicons name="images-outline" size={23} color={Colors.textPrimary} /></View>
           <Text style={styles.galleryText}>Gallery</Text>
         </TouchableOpacity>
 
@@ -229,6 +233,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: Spacing.lg, backgroundColor: Colors.bg },
 
+  permissionIcon: { width: 64, height: 64, borderRadius: Radius.xl, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.primary + '18', marginBottom: Spacing.md },
   permTitle: { ...Typography.heading3, color: Colors.textPrimary, marginBottom: Spacing.lg },
   permBtn: { backgroundColor: Colors.primary, borderRadius: Radius.lg, paddingVertical: Spacing.md, paddingHorizontal: Spacing.xl },
   permBtnText: { ...Typography.body, color: Colors.textOnPrimary, fontWeight: '700' },
@@ -259,7 +264,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     paddingBottom: Spacing.md,
   },
-  topBarContent: { alignItems: 'center', paddingTop: Spacing.sm },
+  topBarContent: { alignItems: 'center', justifyContent: 'space-between', flexDirection: 'row', paddingTop: Spacing.sm },
+  closeButton: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
   topTitle: { ...Typography.heading3, color: Colors.textPrimary },
   topHint: { ...Typography.caption, color: Colors.textSecondary, marginTop: 2 },
 
@@ -282,8 +288,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  galleryIcon: { fontSize: 28 },
+  galleryIcon: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
   galleryText: { ...Typography.caption, color: Colors.textSecondary, marginTop: 4 },
+  liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: Radius.full, paddingHorizontal: 9, paddingVertical: 6 },
+  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.accent },
+  liveText: { ...Typography.caption, color: Colors.textPrimary, fontWeight: '700', letterSpacing: 0.5 },
   captureButton: {
     width: 72,
     height: 72,

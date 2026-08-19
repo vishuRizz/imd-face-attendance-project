@@ -2,16 +2,15 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
-  FlatList,
   TouchableOpacity,
   StyleSheet,
   SafeAreaView,
   Alert,
   ActivityIndicator,
   SectionList,
-  Image,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import * as db from '@/lib/database/db';
 import type { AttendanceRecord, Student } from '@/lib/database/schema';
 import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
@@ -23,7 +22,7 @@ interface ReviewRecord extends AttendanceRecord {
 
 type SectionData = {
   title: string;
-  icon: string;
+  icon: keyof typeof Ionicons.glyphMap;
   color: string;
   data: ReviewRecord[];
 };
@@ -37,7 +36,6 @@ export default function ReviewScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [classId, setClassId] = useState<number | null>(null);
-  const [photoUri, setPhotoUri] = useState<string | undefined>();
 
   // Records keyed by id for local state management
   const [recordMap, setRecordMap] = useState<Map<number, ReviewRecord>>(new Map());
@@ -51,7 +49,6 @@ export default function ReviewScreen() {
       );
       if (!session) throw new Error('Session not found');
       setClassId(session.class_id);
-      setPhotoUri(session.photo_uri);
 
       const [students, recordRows] = await Promise.all([
         db.getStudentsForClass(session.class_id),
@@ -95,10 +92,10 @@ export default function ReviewScreen() {
     const absent = records.filter(r => r.status === 'absent');
 
     setter([
-      { title: 'Present', icon: '✅', color: Colors.present, data: present },
-      { title: 'Review Needed', icon: '⚠️', color: Colors.uncertain, data: uncertain },
-      { title: 'Unknown Faces', icon: '❓', color: Colors.unknown, data: unknown },
-      { title: 'Absent', icon: '❌', color: Colors.absent, data: absent },
+      { title: 'Present', icon: 'checkmark-circle-outline', color: Colors.present, data: present },
+      { title: 'Review needed', icon: 'alert-circle-outline', color: Colors.uncertain, data: uncertain },
+      { title: 'Unknown faces', icon: 'help-circle-outline', color: Colors.unknown, data: unknown },
+      { title: 'Absent', icon: 'close-circle-outline', color: Colors.absent, data: absent },
     ]);
   }
 
@@ -193,14 +190,14 @@ export default function ReviewScreen() {
                 style={styles.actionBtn}
                 onPress={() => handleConfirmMatch(record)}
               >
-                <Text style={styles.actionBtnText}>✓</Text>
+                <Ionicons name="checkmark" size={18} color={Colors.success} />
               </TouchableOpacity>
               <TouchableOpacity
                 id={`btn-change-${record.id}`}
                 style={[styles.actionBtn, styles.actionBtnWarn]}
                 onPress={() => handleChangeStudent(record)}
               >
-                <Text style={styles.actionBtnText}>✎</Text>
+                <Ionicons name="pencil" size={16} color={Colors.warning} />
               </TouchableOpacity>
             </>
           )}
@@ -221,7 +218,7 @@ export default function ReviewScreen() {
               style={[styles.actionBtn, styles.actionBtnDanger]}
               onPress={() => handleMarkAbsent(record)}
             >
-              <Text style={styles.actionBtnText}>✗</Text>
+                <Ionicons name="close" size={18} color={Colors.danger} />
             </TouchableOpacity>
           )}
         </View>
@@ -233,7 +230,7 @@ export default function ReviewScreen() {
     if (section.data.length === 0) return null;
     return (
       <View style={[styles.sectionHeader, { borderColor: section.color + '30' }]}>
-        <Text style={styles.sectionIcon}>{section.icon}</Text>
+        <Ionicons name={section.icon} size={17} color={section.color} />
         <Text style={[styles.sectionTitle, { color: section.color }]}>
           {section.title} ({section.data.length})
         </Text>
@@ -268,9 +265,8 @@ export default function ReviewScreen() {
 
       {uncertainCount > 0 && (
         <View style={styles.reviewNote}>
-          <Text style={styles.reviewNoteText}>
-            ⚠️ {uncertainCount} face{uncertainCount > 1 ? 's need' : ' needs'} your review before confirming
-          </Text>
+          <Ionicons name="alert-circle" size={18} color={Colors.warning} />
+          <Text style={styles.reviewNoteText}>{uncertainCount} face{uncertainCount > 1 ? 's need' : ' needs'} your review before confirming</Text>
         </View>
       )}
 
@@ -295,7 +291,7 @@ export default function ReviewScreen() {
           {saving ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.confirmButtonText}>Confirm Attendance</Text>
+            <><Text style={styles.confirmButtonText}>Confirm attendance</Text><Ionicons name="checkmark-circle" size={19} color={Colors.textOnPrimary} /></>
           )}
         </TouchableOpacity>
       </View>
@@ -342,8 +338,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.warning + '40',
     marginBottom: Spacing.xs,
+    flexDirection: 'row',
+    gap: Spacing.xs,
+    alignItems: 'center',
   },
-  reviewNoteText: { ...Typography.bodySmall, color: Colors.warning, textAlign: 'center' },
+  reviewNoteText: { ...Typography.bodySmall, color: Colors.warning, textAlign: 'center', flex: 1 },
   list: { padding: Spacing.md, paddingBottom: 100 },
   sectionHeader: {
     flexDirection: 'row',
@@ -355,7 +354,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xs,
     marginTop: Spacing.sm,
   },
-  sectionIcon: { fontSize: 16 },
   sectionTitle: { ...Typography.label },
   recordRow: {
     backgroundColor: Colors.bgCard,
@@ -391,7 +389,7 @@ const styles = StyleSheet.create({
   },
   actionBtnWarn: { backgroundColor: Colors.warningBg, borderColor: Colors.warning + '40' },
   actionBtnDanger: { backgroundColor: Colors.dangerBg, borderColor: Colors.danger + '40' },
-  actionBtnText: { ...Typography.bodySmall, color: Colors.textPrimary, fontWeight: '700' },
+  actionBtnText: { ...Typography.bodySmall, color: Colors.warning, fontWeight: '700' },
   footer: {
     position: 'absolute',
     bottom: 0,
@@ -407,6 +405,9 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingVertical: Spacing.md,
     alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: Spacing.sm,
     shadowColor: Colors.primary,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.4,

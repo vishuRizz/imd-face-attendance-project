@@ -5,13 +5,13 @@ import {
   TouchableOpacity,
   StyleSheet,
   SafeAreaView,
-  Alert,
   ActivityIndicator,
   Animated,
   Dimensions,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import {
   getStudentById,
   saveFaceEmbedding,
@@ -25,11 +25,11 @@ import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
 const CAPTURE_ANGLES = [
-  { label: 'Look straight', icon: '😐', hint: 'Face the camera directly' },
-  { label: 'Slight left', icon: '😶', hint: 'Turn your face slightly left' },
-  { label: 'Slight right', icon: '😶', hint: 'Turn your face slightly right' },
-  { label: 'Look up/down', icon: '🙂', hint: 'Tilt your head slightly' },
-  { label: 'Natural expression', icon: '😊', hint: 'Smile naturally' },
+  { label: 'Look straight', icon: 'scan-outline' as const, hint: 'Face the camera directly' },
+  { label: 'Slight left', icon: 'arrow-back-outline' as const, hint: 'Turn your face slightly left' },
+  { label: 'Slight right', icon: 'arrow-forward-outline' as const, hint: 'Turn your face slightly right' },
+  { label: 'Look up/down', icon: 'swap-vertical-outline' as const, hint: 'Tilt your head slightly' },
+  { label: 'Natural expression', icon: 'happy-outline' as const, hint: 'Relax and smile naturally' },
 ];
 
 export default function EnrollScreen() {
@@ -120,7 +120,7 @@ export default function EnrollScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.permissionScreen}>
-          <Text style={styles.permissionIcon}>📷</Text>
+          <View style={styles.permissionIcon}><Ionicons name="camera-outline" size={30} color={Colors.primaryLight} /></View>
           <Text style={styles.permissionTitle}>Camera Permission Required</Text>
           <Text style={styles.permissionText}>
             Face enrollment requires camera access to capture your face.
@@ -138,7 +138,7 @@ export default function EnrollScreen() {
       <SafeAreaView style={styles.container}>
         <View style={styles.successScreen}>
           <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-            <Text style={styles.successIcon}>✅</Text>
+            <View style={styles.successIcon}><Ionicons name="checkmark" size={38} color={Colors.bg} /></View>
           </Animated.View>
           <Text style={styles.successTitle}>Enrollment Complete!</Text>
           <Text style={styles.successName}>{student?.name}</Text>
@@ -181,6 +181,7 @@ export default function EnrollScreen() {
 
       {/* Top info bar */}
       <SafeAreaView style={styles.topBar}>
+        <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}><Ionicons name="close" size={21} color="#fff" /></TouchableOpacity>
         <View style={styles.studentTag}>
           <Text style={styles.studentTagText}>{student?.name ?? '...'}</Text>
         </View>
@@ -204,7 +205,7 @@ export default function EnrollScreen() {
       <View style={styles.bottomPanel}>
         {/* Angle instruction */}
         <View style={styles.angleCard}>
-          <Text style={styles.angleIcon}>{angle.icon}</Text>
+          <View style={styles.angleIcon}><Ionicons name={angle.icon} size={24} color={Colors.primaryLight} /></View>
           <View>
             <Text style={styles.angleLabel}>
               Capture {captureIndex + 1} of {CAPTURE_ANGLES.length}: {angle.label}
@@ -251,7 +252,7 @@ const styles = StyleSheet.create({
 
   // Permission
   permissionScreen: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, backgroundColor: Colors.bg },
-  permissionIcon: { fontSize: 64, marginBottom: Spacing.lg },
+  permissionIcon: { width: 64, height: 64, borderRadius: Radius.xl, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.primary + '18', marginBottom: Spacing.lg },
   permissionTitle: { ...Typography.heading2, color: Colors.textPrimary, marginBottom: Spacing.sm },
   permissionText: { ...Typography.body, color: Colors.textSecondary, textAlign: 'center', marginBottom: Spacing.xl },
   permissionButton: { backgroundColor: Colors.primary, borderRadius: Radius.lg, paddingVertical: Spacing.md, paddingHorizontal: Spacing.xl },
@@ -259,7 +260,7 @@ const styles = StyleSheet.create({
 
   // Success
   successScreen: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, backgroundColor: Colors.bg },
-  successIcon: { fontSize: 80, marginBottom: Spacing.lg },
+  successIcon: { width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.accent, marginBottom: Spacing.lg },
   successTitle: { ...Typography.heading2, color: Colors.textPrimary, marginBottom: Spacing.xs },
   successName: { ...Typography.heading3, color: Colors.primary, marginBottom: Spacing.md },
   successText: { ...Typography.body, color: Colors.textSecondary, textAlign: 'center', marginBottom: Spacing.xl },
@@ -272,6 +273,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  closeButton: { position: 'absolute', left: Spacing.lg, top: Spacing.md, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
   faceOval: {
     width: OVAL_W,
     height: OVAL_H,
@@ -335,7 +337,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  angleIcon: { fontSize: 28 },
+  angleIcon: { width: 42, height: 42, borderRadius: Radius.md, backgroundColor: Colors.primary + '18', justifyContent: 'center', alignItems: 'center' },
   angleLabel: { ...Typography.body, color: Colors.textPrimary, fontWeight: '600' },
   angleHint: { ...Typography.bodySmall, color: Colors.textSecondary, marginTop: 2 },
   errorBanner: {
