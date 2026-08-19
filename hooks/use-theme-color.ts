@@ -1,21 +1,17 @@
 /**
- * Learn more about light and dark modes:
- * https://docs.expo.dev/guides/color-schemes/
+ * FaceScan uses a fixed dark theme.
+ * This hook returns the color from our flat Colors palette, with an optional override.
  */
 
 import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export function useThemeColor(
   props: { light?: string; dark?: string },
-  colorName: keyof typeof Colors.light & keyof typeof Colors.dark
+  colorName: keyof typeof Colors
 ) {
-  const theme = useColorScheme() ?? 'light';
-  const colorFromProps = props[theme];
-
-  if (colorFromProps) {
-    return colorFromProps;
-  } else {
-    return Colors[theme][colorName];
-  }
+  // Always dark mode — return override if provided, otherwise Colors value
+  const colorFromProps = props['dark'] ?? props['light'];
+  if (colorFromProps) return colorFromProps;
+  return Colors[colorName];
 }
+

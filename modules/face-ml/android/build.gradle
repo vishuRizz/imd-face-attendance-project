@@ -1,0 +1,24 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+apply plugin: 'expo-module'
+
+android {
+    compileSdk 35
+    defaultConfig {
+        minSdk 24
+        targetSdk 35
+    }
+    namespace "expo.modules.faceml"
+}
+
+repositories {
+    mavenCentral()
+    google()
+}
+
+dependencies {
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.18.0'
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.23'
+    compileOnly 'com.facebook.react:react-android'
+    compileOnly project(':expo-modules-core')
+}

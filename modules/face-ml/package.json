@@ -1,0 +1,14 @@
+{
+  "name": "face-ml",
+  "version": "1.0.0",
+  "description": "Native Expo module: SCRFD face detection + MobileFaceNet face recognition via ONNX Runtime",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "scripts": {
+    "build": "expo-module build"
+  },
+  "peerDependencies": {
+    "expo": "*",
+    "react-native": "*"
+  }
+}
