@@ -20,66 +20,80 @@ let db: SQLite.SQLiteDatabase | null = null;
 export async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (db) return db;
   db = await SQLite.openDatabaseAsync('facescan_attendance.db');
-  await initializeDatabase(db);
+  try {
+    await initializeDatabase(db);
+    await db.runAsync('PRAGMA foreign_keys = ON');
+  } catch (e) {
+    // Database is likely corrupted (e.g. FK violations in a WAL journal from
+    // a previous crash). Close it, delete the file, and start fresh.
+    console.warn('[DB] Initialization failed, resetting database:', e);
+    try { await db.closeAsync(); } catch (_) {}
+    db = null;
+    await SQLite.deleteDatabaseAsync('facescan_attendance.db');
+    db = await SQLite.openDatabaseAsync('facescan_attendance.db');
+    await initializeDatabase(db);
+    await db.runAsync('PRAGMA foreign_keys = ON');
+  }
   return db;
 }
 
 async function initializeDatabase(database: SQLite.SQLiteDatabase) {
-  await database.execAsync(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
+  // Run each DDL statement individually to avoid expo-sqlite Android's batch
+  // finalizer bug — execAsync internally uses sqlite3_exec which can trigger
+  // FK constraint checks on finalize even with foreign_keys=OFF.
+  await database.runAsync('PRAGMA foreign_keys = OFF');
+  await database.runAsync('PRAGMA journal_mode = WAL');
 
-    CREATE TABLE IF NOT EXISTS classes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      section TEXT NOT NULL,
-      semester TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+  await database.runAsync(`CREATE TABLE IF NOT EXISTS classes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    section TEXT NOT NULL,
+    semester TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
 
-    CREATE TABLE IF NOT EXISTS students (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      roll_number TEXT NOT NULL,
-      student_id TEXT,
-      is_enrolled INTEGER NOT NULL DEFAULT 0,
-      enrolled_at TEXT,
-      UNIQUE(class_id, roll_number)
-    );
+  await database.runAsync(`CREATE TABLE IF NOT EXISTS students (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    class_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    roll_number TEXT NOT NULL,
+    student_id TEXT,
+    is_enrolled INTEGER NOT NULL DEFAULT 0,
+    enrolled_at TEXT,
+    UNIQUE(class_id, roll_number)
+  )`);
 
-    CREATE TABLE IF NOT EXISTS face_embeddings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-      embedding TEXT NOT NULL,
-      capture_index INTEGER NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+  await database.runAsync(`CREATE TABLE IF NOT EXISTS face_embeddings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER NOT NULL,
+    embedding TEXT NOT NULL,
+    capture_index INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
 
-    CREATE TABLE IF NOT EXISTS attendance (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
-      date TEXT NOT NULL,
-      photo_uri TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+  await database.runAsync(`CREATE TABLE IF NOT EXISTS attendance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    class_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    photo_uri TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
 
-    CREATE TABLE IF NOT EXISTS attendance_records (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      attendance_id INTEGER NOT NULL REFERENCES attendance(id) ON DELETE CASCADE,
-      student_id INTEGER REFERENCES students(id),
-      status TEXT NOT NULL DEFAULT 'absent',
-      confidence REAL,
-      face_box TEXT,
-      face_image_uri TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+  await database.runAsync(`CREATE TABLE IF NOT EXISTS attendance_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attendance_id INTEGER NOT NULL,
+    student_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'absent',
+    confidence REAL,
+    face_box TEXT,
+    face_image_uri TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
 
-    CREATE INDEX IF NOT EXISTS idx_students_class ON students(class_id);
-    CREATE INDEX IF NOT EXISTS idx_embeddings_student ON face_embeddings(student_id);
-    CREATE INDEX IF NOT EXISTS idx_attendance_class ON attendance(class_id);
-    CREATE INDEX IF NOT EXISTS idx_records_attendance ON attendance_records(attendance_id);
-  `);
+  await database.runAsync('CREATE INDEX IF NOT EXISTS idx_students_class ON students(class_id)');
+  await database.runAsync('CREATE INDEX IF NOT EXISTS idx_embeddings_student ON face_embeddings(student_id)');
+  await database.runAsync('CREATE INDEX IF NOT EXISTS idx_attendance_class ON attendance(class_id)');
+  await database.runAsync('CREATE INDEX IF NOT EXISTS idx_records_attendance ON attendance_records(attendance_id)');
 }
 
 // ─── Classes ────────────────────────────────────────────────────────────────
@@ -263,16 +277,38 @@ export async function saveAttendanceRecords(
   }>
 ): Promise<void> {
   const database = await getDb();
+
+  // Collect all studentIds that need FK validation
+  const studentIdsToCheck = [
+    ...new Set(records.map(r => r.studentId).filter((id): id is number => id != null)),
+  ];
+
+  // Build a set of valid student IDs to guard against stale references
+  const validStudentIds = new Set<number>();
+  for (const sid of studentIdsToCheck) {
+    const row = await database.getFirstAsync<{ id: number }>(
+      `SELECT id FROM students WHERE id = ?`,
+      [sid]
+    );
+    if (row) validStudentIds.add(sid);
+  }
+
   await database.withTransactionAsync(async () => {
     for (const r of records) {
+      // If studentId doesn't exist in DB, treat as unknown face to avoid FK violation
+      const resolvedStudentId =
+        r.studentId != null && validStudentIds.has(r.studentId) ? r.studentId : null;
+      const resolvedStatus =
+        resolvedStudentId == null && r.studentId != null ? 'unknown' : r.status;
+
       await database.runAsync(
         `INSERT INTO attendance_records
           (attendance_id, student_id, status, confidence, face_box, face_image_uri)
           VALUES (?, ?, ?, ?, ?, ?)`,
         [
           attendanceId,
-          r.studentId ?? null,
-          r.status,
+          resolvedStudentId,
+          resolvedStatus,
           r.confidence ?? null,
           r.faceBox ? JSON.stringify(r.faceBox) : null,
           r.faceImageUri ?? null,

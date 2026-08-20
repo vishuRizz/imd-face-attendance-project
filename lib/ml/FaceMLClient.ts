@@ -1,5 +1,6 @@
 // Model setup uses the URI-based APIs. In Expo SDK 54 those APIs live in the
 // legacy entry point; the default module exposes the newer File/Directory API.
+import { Asset } from 'expo-asset';
 import * as FileSystem from 'expo-file-system/legacy';
 import {
   initModels,
@@ -7,32 +8,66 @@ import {
   validateEnrollmentPhoto,
   isReady,
   type DetectionResult,
-} from '../../modules/face-ml';
-import { buildEnrolledStudents, matchFace, type MatchResult } from './matcher';
+} from '../../modules/face-ml/index';
+import { buildEnrolledTemplates, matchGroupFaces, type MatchResult } from './matcher';
 
-const MODELS_DIR = `${FileSystem.documentDirectory}models/`;
-const DETECTOR_MODEL = `${MODELS_DIR}scrfd_500m_kps.onnx`;
-const RECOGNIZER_MODEL = `${MODELS_DIR}mobilefacenet.onnx`;
+import detectorAssetModule   from '../../assets/models/scrfd_10g_kps.onnx';
+import recognizerAssetModule from '../../assets/models/adaface_ir101.onnx';
 
-// Source paths — models should be bundled in assets/models/
-const ASSET_DETECTOR = 'asset:/models/scrfd_500m_kps.onnx';
-const ASSET_RECOGNIZER = 'asset:/models/mobilefacenet.onnx';
+const MODELS_DIR        = `${FileSystem.documentDirectory}models/`;
+const DETECTOR_MODEL    = `${MODELS_DIR}scrfd_10g_kps.onnx`;
+const RECOGNIZER_MODEL  = `${MODELS_DIR}adaface_ir101.onnx`;
+
+const MIN_DETECTOR_BYTES   =  15_000_000;  // det_10g ~17MB
+const MIN_RECOGNIZER_BYTES = 160_000_000;  // adaface_ir101 ~170MB
+
+/** ONNX Runtime on Android expects a plain path, not a file:// URI. */
+function toNativePath(uri: string): string {
+  return uri.replace(/^file:\/\//, '');
+}
 
 let _initialized = false;
-let _initializing = false;
+let _initializing: Promise<void> | null = null;
 
-/** Copy bundled models from assets to document directory if needed */
-async function ensureModelsExist(): Promise<void> {
+/** Copy bundled models from Metro assets to document directory if needed. */
+async function ensureModelsExist(): Promise<{ detector: string; recognizer: string } | null> {
   await FileSystem.makeDirectoryAsync(MODELS_DIR, { intermediates: true });
 
-  const detectorInfo = await FileSystem.getInfoAsync(DETECTOR_MODEL);
-  if (!detectorInfo.exists) {
-    await FileSystem.copyAsync({ from: ASSET_DETECTOR, to: DETECTOR_MODEL });
+  async function copyBundledAsset(
+    moduleId: number,
+    destPath: string,
+    minBytes: number
+  ): Promise<void> {
+    const info = await FileSystem.getInfoAsync(destPath);
+    if (info.exists && 'size' in info && info.size >= minBytes) return;
+
+    if (info.exists) {
+      await FileSystem.deleteAsync(destPath, { idempotent: true });
+    }
+
+    const asset = Asset.fromModule(moduleId);
+    await asset.downloadAsync();
+    if (!asset.localUri) {
+      throw new Error('Failed to resolve bundled model asset. Run: npm run download-models');
+    }
+
+    await FileSystem.copyAsync({ from: asset.localUri, to: destPath });
+
+    const copied = await FileSystem.getInfoAsync(destPath);
+    if (!copied.exists || !('size' in copied) || copied.size < minBytes) {
+      throw new Error(`Failed to copy model to ${destPath}`);
+    }
   }
 
-  const recognizerInfo = await FileSystem.getInfoAsync(RECOGNIZER_MODEL);
-  if (!recognizerInfo.exists) {
-    await FileSystem.copyAsync({ from: ASSET_RECOGNIZER, to: RECOGNIZER_MODEL });
+  try {
+    await copyBundledAsset(detectorAssetModule, DETECTOR_MODEL, MIN_DETECTOR_BYTES);
+    await copyBundledAsset(recognizerAssetModule, RECOGNIZER_MODEL, MIN_RECOGNIZER_BYTES);
+    return {
+      detector: toNativePath(DETECTOR_MODEL),
+      recognizer: toNativePath(RECOGNIZER_MODEL),
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -40,26 +75,49 @@ async function ensureModelsExist(): Promise<void> {
 export async function initMLModels(): Promise<void> {
   if (_initialized) return;
   if (_initializing) {
-    // Wait for in-progress init
-    await new Promise<void>((resolve) => {
-      const interval = setInterval(() => {
-        if (_initialized) { clearInterval(interval); resolve(); }
-      }, 100);
-    });
+    await _initializing;
     return;
   }
 
-  _initializing = true;
-  try {
-    await ensureModelsExist();
-    await initModels(DETECTOR_MODEL, RECOGNIZER_MODEL);
+  _initializing = (async () => {
+    // Prefer native APK asset extraction (reliable for ~190MB models).
+    // JS Metro copy is dev-client fallback only.
+    try {
+      await initModels('', '');
+      _initialized = true;
+      return;
+    } catch {
+      // Fall through to JS documentDirectory copy.
+    }
+
+    const paths = await ensureModelsExist();
+    if (!paths) {
+      throw new Error(
+        'Failed to load ML models. Rebuild the app after placing .onnx files in assets/models/'
+      );
+    }
+    await initModels(paths.detector, paths.recognizer);
     _initialized = true;
+  })();
+
+  try {
+    await _initializing;
+  } catch (error) {
+    _initialized = false;
+    throw error;
   } finally {
-    _initializing = false;
+    _initializing = null;
   }
 }
 
 export async function checkModelsReady(): Promise<boolean> {
+  if (!_initialized) {
+    try {
+      await initMLModels();
+    } catch {
+      return false;
+    }
+  }
   return isReady();
 }
 
@@ -73,6 +131,7 @@ export async function validateCapture(imageUri: string): Promise<{
   errorMessage?: string;
   blurScore?: number;
 }> {
+  await initMLModels();
   const result = await validateEnrollmentPhoto(imageUri);
   return {
     isValid: result.validation.isValid,
@@ -102,14 +161,43 @@ export async function processGroupPhoto(
   imageWidth: number;
   imageHeight: number;
 }> {
+  await initMLModels();
   const detection: DetectionResult = await detectAndEmbedFaces(imageUri);
-  const enrolled = buildEnrolledStudents(rawEnrolledEmbeddings);
+
+  // Ignore stale embeddings from older models (e.g. MobileFaceNet 128-d).
+  const validEmbeddings = rawEnrolledEmbeddings.filter(
+    (row) => Array.isArray(row.embedding) && row.embedding.length === 512
+  );
+  if (validEmbeddings.length === 0 && rawEnrolledEmbeddings.length > 0) {
+    throw new Error(
+      'Stored face embeddings are from an old model. Delete and re-enroll every student, then scan again.'
+    );
+  }
+
+  const enrolled = buildEnrolledTemplates(validEmbeddings);
+  const matches = matchGroupFaces(
+    detection.faces.map((face) => face.embedding),
+    enrolled
+  );
+
+  if (__DEV__) {
+    console.log(
+      '[FaceML] faces=',
+      detection.faces.length,
+      'enrolled=',
+      enrolled.length,
+      'matches=',
+      matches.map((m) =>
+        m.type === 'unknown' ? 'unknown' : `${m.type}:${m.studentId}@${m.score.toFixed(3)}`
+      )
+    );
+  }
 
   const results: FaceMatchResult[] = detection.faces.map((face, idx) => ({
     faceIndex: idx,
     box: face.box,
     landmarks: face.landmarks,
-    match: matchFace(face.embedding, enrolled),
+    match: matches[idx],
     embedding: face.embedding,
   }));
 

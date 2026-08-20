@@ -4,11 +4,11 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ActivityIndicator,
   Animated,
   Dimensions,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,7 +18,7 @@ import {
   markStudentEnrolled,
   deleteEmbeddingsForStudent,
 } from '@/lib/database/db';
-import { validateCapture } from '@/lib/ml/FaceMLClient';
+import { validateCapture, initMLModels } from '@/lib/ml/FaceMLClient';
 import type { Student } from '@/lib/database/schema';
 import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
 
@@ -47,6 +47,7 @@ export default function EnrollScreen() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [capturedCount, setCapturedCount] = useState(0);
   const [done, setDone] = useState(false);
+  const [modelsLoading, setModelsLoading] = useState(true);
 
   // Animation for capture feedback
   const flashAnim = useRef(new Animated.Value(0)).current;
@@ -56,6 +57,9 @@ export default function EnrollScreen() {
     getStudentById(studentId).then(setStudent).catch(console.error);
     // Clear any partial enrollments on mount
     deleteEmbeddingsForStudent(studentId).catch(() => {});
+    initMLModels()
+      .catch((e) => setErrorMsg(e.message ?? 'Failed to load face models'))
+      .finally(() => setModelsLoading(false));
   }, [studentId]);
 
   const flashCapture = useCallback(() => {
@@ -158,6 +162,17 @@ export default function EnrollScreen() {
   }
 
   const angle = CAPTURE_ANGLES[captureIndex];
+
+  if (modelsLoading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.permissionScreen}>
+          <ActivityIndicator color={Colors.primary} size="large" />
+          <Text style={[styles.permissionTitle, { marginTop: Spacing.lg }]}>Loading face models...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <View style={styles.container}>

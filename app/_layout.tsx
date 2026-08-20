@@ -1,6 +1,7 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { initMLModels } from '@/lib/ml/FaceMLClient';
 
 export default function RootLayout() {
@@ -10,7 +11,7 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <>
+    <SafeAreaProvider>
       <StatusBar style="light" backgroundColor="#0A0B14" />
       <Stack
         screenOptions={{
@@ -30,6 +31,6 @@ export default function RootLayout() {
         <Stack.Screen name="attendance/scan/[classId]" options={{ title: 'Scan Attendance', headerShown: false }} />
         <Stack.Screen name="attendance/review/[sessionId]" options={{ title: 'Review Attendance' }} />
       </Stack>
-    </>
+    </SafeAreaProvider>
   );
 }

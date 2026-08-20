@@ -16,7 +16,7 @@ export interface Landmark {
 export interface DetectedFace {
   box: FaceBox;
   landmarks: Landmark[]; // 5 points: left_eye, right_eye, nose, left_mouth, right_mouth
-  embedding: number[];   // 512-dim MobileFaceNet embedding (L2-normalized)
+  embedding: number[];   // 512-dim AdaFace IR-101 embedding (L2-normalized)
   isBlurry: boolean;
   blurScore: number;     // Laplacian variance — higher = sharper
 }

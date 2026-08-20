@@ -4,11 +4,11 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ActivityIndicator,
   Alert,
   Image,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -79,9 +79,12 @@ export default function ScanScreen() {
       const presentStudentIds = new Set<number>();
       const attendanceRows: any[] = [];
 
-      // Add records for detected faces
+      // Add records for detected faces (one student can only be matched once)
+      const claimedStudentIds = new Set<number>();
       for (const face of results) {
         if (face.match.type === 'confident') {
+          if (claimedStudentIds.has(face.match.studentId)) continue;
+          claimedStudentIds.add(face.match.studentId);
           presentStudentIds.add(face.match.studentId);
           attendanceRows.push({
             studentId: face.match.studentId,
@@ -90,6 +93,8 @@ export default function ScanScreen() {
             faceBox: face.box,
           });
         } else if (face.match.type === 'uncertain') {
+          if (claimedStudentIds.has(face.match.studentId)) continue;
+          claimedStudentIds.add(face.match.studentId);
           attendanceRows.push({
             studentId: face.match.studentId,
             status: 'uncertain',

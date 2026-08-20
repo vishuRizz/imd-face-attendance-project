@@ -1,6 +1,5 @@
 apply plugin: 'com.android.library'
 apply plugin: 'org.jetbrains.kotlin.android'
-apply plugin: 'expo-module'
 
 android {
     compileSdk 35
@@ -9,6 +8,18 @@ android {
         targetSdk 35
     }
     namespace "expo.modules.faceml"
+
+    sourceSets {
+        main {
+            // android/ → face-ml/ → modules/ → project root
+            assets.srcDirs += ['../../../assets/models']
+        }
+    }
+
+    // Prevent aapt from compressing large ONNX models (>1MB compressed assets fail at runtime)
+    androidResources {
+        noCompress += ['onnx']
+    }
 
     kotlinOptions {
         jvmTarget = '17'
@@ -23,6 +34,7 @@ repositories {
 dependencies {
     // ONNX Runtime for face detection + recognition
     implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.18.0'
+    implementation 'androidx.exifinterface:exifinterface:1.3.7'
 
     // expo-modules-core is provided by the host app — compile-only
     compileOnly project(':expo-modules-core')

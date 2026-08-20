@@ -41,3 +41,15 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Large ML model weights (download locally — exceed GitHub 100MB limit)
+*.onnx
+assets/models/*.onnx
+
+# Accidental Gradle distribution downloads
+gradle-*.zip
+*.bin.zip
+
+# Native module build outputs (never commit)
+modules/**/android/build/
+modules/**/build/

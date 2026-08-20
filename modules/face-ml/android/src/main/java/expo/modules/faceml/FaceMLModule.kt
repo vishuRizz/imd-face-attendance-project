@@ -7,6 +7,7 @@ import android.graphics.Matrix
 import android.graphics.PointF
 import android.graphics.RectF
 import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -32,32 +33,39 @@ class FaceMLModule : Module() {
     private val DETECTOR_MEAN = floatArrayOf(127.5f, 127.5f, 127.5f)
     private val DETECTOR_STD = floatArrayOf(128.0f, 128.0f, 128.0f)
 
-    // MobileFaceNet input size
+    // AdaFace IR-101 input: 112×112, normalized to [-1, 1] using mean=127.5, std=127.5
     private val RECOGNIZER_INPUT_SIZE = 112
     private val RECOGNIZER_MEAN = floatArrayOf(127.5f, 127.5f, 127.5f)
-    private val RECOGNIZER_STD = floatArrayOf(128.0f, 128.0f, 128.0f)
+    private val RECOGNIZER_STD  = floatArrayOf(127.5f, 127.5f, 127.5f) // AdaFace uses 127.5 not 128.0
 
-    // Detection thresholds
+    // Detection thresholds — 10G detector is much more accurate; keep confidence high
     private val CONFIDENCE_THRESHOLD = 0.5f
     private val NMS_THRESHOLD = 0.4f
-    private val MIN_FACE_SIZE = 40 // pixels
+    private val MIN_FACE_SIZE = 30 // pixels — 10G handles smaller faces well
 
     // Blur detection threshold (Laplacian variance)
     private val BLUR_THRESHOLD = 100.0
+
+    private val DETECTOR_ASSET   = "scrfd_10g_kps.onnx"    // SCRFD-10G: best InsightFace detector
+    private val RECOGNIZER_ASSET = "adaface_ir101.onnx"    // AdaFace IR-101: best on-device recognizer
+    private val MIN_DETECTOR_BYTES   =  15_000_000L        // det_10g ~17MB
+    private val MIN_RECOGNIZER_BYTES = 160_000_000L        // adaface_ir101 ~170MB
 
     override fun definition() = ModuleDefinition {
         Name("FaceMLModule")
 
         AsyncFunction("initModels") { detectorPath: String, recognizerPath: String, promise: Promise ->
             try {
+                val (detectorFile, recognizerFile) = resolveModelFiles(detectorPath, recognizerPath)
+
                 ortEnvironment = OrtEnvironment.getEnvironment()
                 val sessionOptions = OrtSession.SessionOptions().apply {
                     addConfigEntry("session.inter_op_num_threads", "2")
                     addConfigEntry("session.intra_op_num_threads", "2")
                 }
 
-                detectorSession = ortEnvironment!!.createSession(detectorPath, sessionOptions)
-                recognizerSession = ortEnvironment!!.createSession(recognizerPath, sessionOptions)
+                detectorSession = ortEnvironment!!.createSession(detectorFile, sessionOptions)
+                recognizerSession = ortEnvironment!!.createSession(recognizerFile, sessionOptions)
                 isInitialized = true
                 promise.resolve(null)
             } catch (e: Exception) {
@@ -82,7 +90,7 @@ class FaceMLModule : Module() {
                 val result = mutableListOf<Map<String, Any>>()
 
                 for (face in faces) {
-                    val aligned = alignFace(bitmap, face.landmarks)
+                    val aligned = alignFace(bitmap, face.landmarks, face.box)
                     val embedding = generateEmbedding(aligned)
                     val blurScore = computeBlurScore(aligned)
 
@@ -150,7 +158,7 @@ class FaceMLModule : Module() {
                         val faceWidth = face.box.width()
                         val isFaceTooSmall = faceWidth < MIN_FACE_SIZE
 
-                        val aligned = alignFace(bitmap, face.landmarks)
+                        val aligned = alignFace(bitmap, face.landmarks, face.box)
                         val blurScore = computeBlurScore(aligned)
                         val isBlurry = blurScore < BLUR_THRESHOLD
 
@@ -173,7 +181,9 @@ class FaceMLModule : Module() {
                             }
                             else -> {
                                 val emb = generateEmbedding(aligned)
-                                embedding = emb.toList()
+                                // Expo serializes numeric arrays as doubles; convert the ONNX
+                                // FloatArray explicitly before returning it to JavaScript.
+                                embedding = emb.map { it.toDouble() }
                                 validation["isValid"] = true
                                 validation["faceCount"] = 1
                                 validation["isBlurry"] = false
@@ -192,18 +202,110 @@ class FaceMLModule : Module() {
                 promise.reject("VALIDATION_ERROR", e.message ?: "Unknown error", e)
             }
         }
+
+        OnDestroy {
+            detectorSession?.close()
+            recognizerSession?.close()
+            ortEnvironment?.close()
+            detectorSession = null
+            recognizerSession = null
+            ortEnvironment = null
+            isInitialized = false
+        }
+    }
+
+    // ─── Private: Model Paths ─────────────────────────────────────────────────
+
+    private fun resolveModelFiles(detectorPath: String, recognizerPath: String): Pair<String, String> {
+        val detector = tryResolveExistingPath(detectorPath, MIN_DETECTOR_BYTES)
+        val recognizer = tryResolveExistingPath(recognizerPath, MIN_RECOGNIZER_BYTES)
+        if (detector != null && recognizer != null) {
+            return detector to recognizer
+        }
+        return ensureBundledModels()
+    }
+
+    private fun tryResolveExistingPath(path: String, minBytes: Long): String? {
+        if (path.isBlank()) return null
+        val normalized = if (path.startsWith("file://")) path.removePrefix("file://") else path
+        val file = File(normalized)
+        return if (file.exists() && file.length() >= minBytes) normalized else null
+    }
+
+    private fun ensureBundledModels(): Pair<String, String> {
+        val context = appContext.reactContext
+            ?: throw Exception("React context unavailable for model extraction")
+
+        val modelsDir = File(context.filesDir, "models")
+        if (!modelsDir.exists()) modelsDir.mkdirs()
+
+        val detector = File(modelsDir, DETECTOR_ASSET)
+        val recognizer = File(modelsDir, RECOGNIZER_ASSET)
+
+        copyAssetIfNeeded(context, DETECTOR_ASSET, detector, MIN_DETECTOR_BYTES)
+        copyAssetIfNeeded(context, RECOGNIZER_ASSET, recognizer, MIN_RECOGNIZER_BYTES)
+
+        return detector.absolutePath to recognizer.absolutePath
+    }
+
+    private fun copyAssetIfNeeded(
+        context: Context,
+        assetName: String,
+        dest: File,
+        minBytes: Long
+    ) {
+        if (dest.exists() && dest.length() >= minBytes) return
+        if (dest.exists()) dest.delete()
+
+        context.assets.open(assetName).use { input ->
+            dest.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+
+        if (!dest.exists() || dest.length() < minBytes) {
+            throw Exception("Failed to extract bundled model: $assetName")
+        }
     }
 
     // ─── Private: Image Loading ───────────────────────────────────────────────
 
     private fun loadBitmap(uriStr: String): Bitmap? {
+        val context = appContext.reactContext ?: return null
         return try {
             val uri = Uri.parse(uriStr)
-            val inputStream = appContext.reactContext?.contentResolver?.openInputStream(uri)
+            val inputStream = context.contentResolver.openInputStream(uri)
                 ?: FileInputStream(File(uri.path ?: return null))
-            BitmapFactory.decodeStream(inputStream)
+
+            inputStream.use { stream ->
+                var bitmap = BitmapFactory.decodeStream(stream) ?: return null
+                applyExifRotation(context, uri, bitmap)
+            }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    private fun applyExifRotation(context: Context, uri: Uri, bitmap: Bitmap): Bitmap {
+        return try {
+            context.contentResolver.openInputStream(uri)?.use { exifStream ->
+                val exif = ExifInterface(exifStream)
+                val orientation = exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
+                val rotation = when (orientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> return bitmap
+                }
+                val matrix = Matrix()
+                matrix.postRotate(rotation)
+                Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            } ?: bitmap
+        } catch (_: Exception) {
+            bitmap
         }
     }
 
@@ -288,6 +390,23 @@ class FaceMLModule : Module() {
         return result
     }
 
+    private fun tensorToFloatArray(tensor: OnnxTensor): FloatArray {
+        val count = tensorElementCount(tensor)
+        val buffer = tensor.floatBuffer.duplicate()
+        buffer.rewind()
+        val data = FloatArray(count)
+        val n = min(count, buffer.remaining())
+        buffer.get(data, 0, n)
+        return data
+    }
+
+    private fun lastDim(tensor: OnnxTensor): Int {
+        val shape = tensor.info.shape
+        if (shape.isEmpty()) return 0
+        val last = shape.last()
+        return if (last > 0) last.toInt() else 0
+    }
+
     private fun parseSCRFDOutput(
         outputs: OrtSession.Result,
         scale: Float,
@@ -297,51 +416,46 @@ class FaceMLModule : Module() {
         origHeight: Int
     ): List<FaceDetection> {
         val faces = mutableListOf<FaceDetection>()
+        val tensors = outputs.mapNotNull { it.value as? OnnxTensor }
 
-        // InsightFace SCRFD with KPS exports exactly 9 outputs (or 6 without KPS).
-        // Regardless of output name (which can be numeric like "286"), order is fixed:
-        //   [0] score_stride_8  — shape [1, H*W*2, 1]
-        //   [1] score_stride_16
-        //   [2] score_stride_32
-        //   [3] bbox_stride_8   — shape [1, H*W*2, 4]
-        //   [4] bbox_stride_16
-        //   [5] bbox_stride_32
-        //   [6] kps_stride_8    — shape [1, H*W*2, 10]  (optional)
-        //   [7] kps_stride_16
-        //   [8] kps_stride_32
+        // Group by last dimension — do NOT trust HashMap iteration order.
+        // scores: [..., 1], bbox: [..., 4], kps: [..., 10]
+        fun tensorsForLastDim(dim: Int) = tensors.filter { lastDim(it) == dim }
 
-        val outputList = outputs.map { it.value }.toList()
-        val numOutputs = outputList.size
-        val hasKPS = numOutputs >= 9
+        val scoreTensors = tensorsForLastDim(1)
+        val bboxTensors = tensorsForLastDim(4)
+        val kpsTensors = tensorsForLastDim(10)
 
         val strides = intArrayOf(8, 16, 32)
 
-        for ((idx, stride) in strides.withIndex()) {
+        for (stride in strides) {
             try {
-                val scoresTensor = outputList.getOrNull(idx) as? OnnxTensor ?: continue
-                val bboxTensor   = outputList.getOrNull(idx + 3) as? OnnxTensor ?: continue
-                val kpsTensor    = if (hasKPS) outputList.getOrNull(idx + 6) as? OnnxTensor else null
-
-                val scoresData = scoresTensor.floatBuffer.array()
-                val bboxData   = bboxTensor.floatBuffer.array()
-                val kpsData    = kpsTensor?.floatBuffer?.array()
-
                 val fmH = DETECTOR_INPUT_SIZE / stride
                 val fmW = DETECTOR_INPUT_SIZE / stride
                 val numAnchors = 2
+                val expectedAnchors = fmH * fmW * numAnchors
 
-                for (i in 0 until fmH * fmW * numAnchors) {
+                val scoresTensor = scoreTensors.find { tensorElementCount(it) == expectedAnchors }
+                    ?: continue
+                val bboxTensor = bboxTensors.find { tensorElementCount(it) == expectedAnchors * 4 }
+                    ?: continue
+                val kpsTensor = kpsTensors.find { tensorElementCount(it) == expectedAnchors * 10 }
+
+                val scoresData = tensorToFloatArray(scoresTensor)
+                val bboxData = tensorToFloatArray(bboxTensor)
+                val kpsData = kpsTensor?.let { tensorToFloatArray(it) }
+
+                for (i in 0 until expectedAnchors) {
                     val score = scoresData.getOrElse(i) { 0f }
                     if (score < CONFIDENCE_THRESHOLD) continue
 
-                    val row    = (i / numAnchors) / fmW
-                    val col    = (i / numAnchors) % fmW
-
+                    val row = (i / numAnchors) / fmW
+                    val col = (i / numAnchors) % fmW
                     val cx = (col + 0.5f) * stride
                     val cy = (row + 0.5f) * stride
 
                     val bboxOffset = i * 4
-                    val x1 = cx - bboxData.getOrElse(bboxOffset)     { 0f } * stride
+                    val x1 = cx - bboxData.getOrElse(bboxOffset) { 0f } * stride
                     val y1 = cy - bboxData.getOrElse(bboxOffset + 1) { 0f } * stride
                     val x2 = cx + bboxData.getOrElse(bboxOffset + 2) { 0f } * stride
                     val y2 = cy + bboxData.getOrElse(bboxOffset + 3) { 0f } * stride
@@ -350,30 +464,28 @@ class FaceMLModule : Module() {
                     val origY1 = ((y1 - padY) / scale).coerceIn(0f, origHeight.toFloat())
                     val origX2 = ((x2 - padX) / scale).coerceIn(0f, origWidth.toFloat())
                     val origY2 = ((y2 - padY) / scale).coerceIn(0f, origHeight.toFloat())
-
                     val box = RectF(origX1, origY1, origX2, origY2)
 
                     val landmarks = mutableListOf<PointF>()
                     if (kpsData != null) {
+                        // InsightFace: landmark = anchor_center + kps_offset * stride
                         val kpsOffset = i * 10
                         for (k in 0 until 5) {
-                            val lx = ((kpsData.getOrElse(kpsOffset + k * 2)     { 0f } * stride - padX) / scale)
+                            val lx = ((cx + kpsData.getOrElse(kpsOffset + k * 2) { 0f } * stride - padX) / scale)
                                 .coerceIn(0f, origWidth.toFloat())
-                            val ly = ((kpsData.getOrElse(kpsOffset + k * 2 + 1) { 0f } * stride - padY) / scale)
-                                .coerceIn(0f, origWidth.toFloat())
+                            val ly = ((cy + kpsData.getOrElse(kpsOffset + k * 2 + 1) { 0f } * stride - padY) / scale)
+                                .coerceIn(0f, origHeight.toFloat())
                             landmarks.add(PointF(lx, ly))
                         }
                     } else {
-                        // Fallback geometric landmarks
-                        val cxOrig = (origX1 + origX2) / 2
-                        val cyOrig = (origY1 + origY2) / 2
-                        val w = origX2 - origX1; val h = origY2 - origY1
+                        val w = origX2 - origX1
+                        val h = origY2 - origY1
                         landmarks.addAll(listOf(
-                            PointF(origX1 + w * 0.30f, origY1 + h * 0.35f), // left eye
-                            PointF(origX1 + w * 0.70f, origY1 + h * 0.35f), // right eye
-                            PointF(cxOrig,             origY1 + h * 0.55f), // nose
-                            PointF(origX1 + w * 0.35f, origY1 + h * 0.70f), // left mouth
-                            PointF(origX1 + w * 0.65f, origY1 + h * 0.70f)  // right mouth
+                            PointF(origX1 + w * 0.30f, origY1 + h * 0.35f),
+                            PointF(origX1 + w * 0.70f, origY1 + h * 0.35f),
+                            PointF((origX1 + origX2) / 2, origY1 + h * 0.55f),
+                            PointF(origX1 + w * 0.35f, origY1 + h * 0.70f),
+                            PointF(origX1 + w * 0.65f, origY1 + h * 0.70f)
                         ))
                     }
 
@@ -381,8 +493,8 @@ class FaceMLModule : Module() {
                         faces.add(FaceDetection(box, landmarks, score))
                     }
                 }
-            } catch (e: Exception) {
-                // Skip stride on error
+            } catch (_: Exception) {
+                // Skip this stride
             }
         }
         return faces
@@ -427,16 +539,23 @@ class FaceMLModule : Module() {
         floatArrayOf(70.7299f, 92.2041f)
     )
 
-    private fun alignFace(bitmap: Bitmap, landmarks: List<PointF>): Bitmap {
+    private fun cropFaceFallback(bitmap: Bitmap, box: RectF): Bitmap {
+        val pad = 0.25f
+        val left = (box.left - box.width() * pad).toInt().coerceIn(0, bitmap.width - 1)
+        val top = (box.top - box.height() * pad).toInt().coerceIn(0, bitmap.height - 1)
+        val right = (box.right + box.width() * pad).toInt().coerceIn(left + 1, bitmap.width)
+        val bottom = (box.bottom + box.height() * pad).toInt().coerceIn(top + 1, bitmap.height)
+        val cropped = Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
+        return Bitmap.createScaledBitmap(cropped, RECOGNIZER_INPUT_SIZE, RECOGNIZER_INPUT_SIZE, true)
+    }
+
+    private fun alignFace(bitmap: Bitmap, landmarks: List<PointF>, box: RectF): Bitmap {
         if (landmarks.size < 5) {
-            // Fallback: simple crop and resize
-            return Bitmap.createScaledBitmap(bitmap, RECOGNIZER_INPUT_SIZE, RECOGNIZER_INPUT_SIZE, true)
+            return cropFaceFallback(bitmap, box)
         }
 
         val src = Array(5) { i -> floatArrayOf(landmarks[i].x, landmarks[i].y) }
         val dst = ARCFACE_TEMPLATE
-
-        // Compute similarity transform (scale, rotation, translation)
         val matrix = computeSimilarityTransform(src, dst)
 
         val result = Bitmap.createBitmap(RECOGNIZER_INPUT_SIZE, RECOGNIZER_INPUT_SIZE, Bitmap.Config.ARGB_8888)
@@ -487,11 +606,15 @@ class FaceMLModule : Module() {
         return matrix
     }
 
-    // ─── Private: MobileFaceNet Embedding ────────────────────────────────────
+    // ─── Private: Face Embedding (AdaFace IR-101) ────────────────────────────
+
+    private val EMBEDDING_DIM = 512
 
     private fun generateEmbedding(alignedFace: Bitmap): FloatArray {
-        val session = recognizerSession ?: return FloatArray(512)
-        val env = ortEnvironment ?: return FloatArray(512)
+        val session = recognizerSession
+            ?: throw Exception("Recognizer model not loaded — call initModels first")
+        val env = ortEnvironment
+            ?: throw Exception("OrtEnvironment not initialized")
 
         val inputArray = bitmapToNCHW(alignedFace, RECOGNIZER_MEAN, RECOGNIZER_STD)
         val inputShape = longArrayOf(1, 3, RECOGNIZER_INPUT_SIZE.toLong(), RECOGNIZER_INPUT_SIZE.toLong())
@@ -499,8 +622,11 @@ class FaceMLModule : Module() {
 
         val inputName = session.inputNames.iterator().next()
         val outputs = session.run(mapOf(inputName to inputTensor))
-        val outputName = session.outputNames.iterator().next()
-        val embedding = (outputs[outputName].get() as OnnxTensor).floatBuffer.array().clone()
+
+        // AdaFace outputs multiple tensors (512-dim embedding + 1-dim norm, etc.).
+        // Pick by tensor element count from shape — never use floatBuffer.array().size
+        // (that is heap capacity, not tensor size, and can mis-read the norm output).
+        val embedding = extractEmbeddingFromOutputs(outputs, session.outputNames)
 
         inputTensor.close()
         outputs.close()
@@ -508,11 +634,55 @@ class FaceMLModule : Module() {
         return l2NormalizeKotlin(embedding)
     }
 
+    private fun extractEmbeddingFromOutputs(
+        outputs: OrtSession.Result,
+        outputNames: Set<String>
+    ): FloatArray {
+        for (entry in outputs) {
+            val tensor = entry.value as? OnnxTensor ?: continue
+            val elementCount = tensorElementCount(tensor)
+            if (elementCount != EMBEDDING_DIM) continue
+
+            val buffer = tensor.floatBuffer.duplicate()
+            buffer.rewind()
+            val embedding = FloatArray(elementCount)
+            if (buffer.remaining() < elementCount) continue
+            buffer.get(embedding, 0, elementCount)
+            return embedding
+        }
+
+        val shapeSummary = outputNames.mapNotNull { name ->
+            for (entry in outputs) {
+                if (entry.key != name) continue
+                val tensor = entry.value as? OnnxTensor ?: return@mapNotNull null
+                return@mapNotNull "$name=${tensor.info.shape.contentToString()}"
+            }
+            null
+        }.joinToString(", ")
+
+        throw Exception(
+            "No ${EMBEDDING_DIM}-dim embedding output in recognizer model. Outputs: [$shapeSummary]"
+        )
+    }
+
+    private fun tensorElementCount(tensor: OnnxTensor): Int {
+        val shape = tensor.info.shape
+        if (shape.isEmpty()) return 0
+        var count = 1L
+        for (dim in shape) {
+            if (dim <= 0) return 0
+            count *= dim
+        }
+        return count.toInt()
+    }
+
     private fun l2NormalizeKotlin(vec: FloatArray): FloatArray {
         var norm = 0f
         for (v in vec) norm += v * v
         norm = sqrt(norm.toDouble()).toFloat()
-        if (norm == 0f) return vec
+        // Guard: if embedding is all zeros (model produced garbage), throw so caller
+        // gets a meaningful error instead of silently matching against random students.
+        if (norm < 1e-6f) throw Exception("Embedding is a zero vector — model output is invalid")
         return FloatArray(vec.size) { vec[it] / norm }
     }
 
@@ -546,10 +716,4 @@ class FaceMLModule : Module() {
         return if (count > 0) sum / count else 0.0
     }
 
-    override fun onDestroy() {
-        detectorSession?.close()
-        recognizerSession?.close()
-        ortEnvironment?.close()
-        super.onDestroy()
-    }
 }

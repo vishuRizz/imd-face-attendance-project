@@ -1,57 +1,51 @@
-# ONNX Model Files Required
+# ONNX Model Files
 
-The FaceScan app requires two ONNX model files to be placed in this directory:
+The FaceScan app uses two ONNX models:
 
 ## Required Files
 
-| File | Model | Size | Source |
-|------|-------|------|--------|
-| `scrfd_500m_kps.onnx` | SCRFD Face Detector | ~1MB | [InsightFace Model Zoo](https://github.com/deepinsight/insightface/tree/master/detection/scrfd) |
-| `mobilefacenet.onnx` | MobileFaceNet Recognizer | ~3.8MB | [ArcFace Models](https://github.com/deepinsight/insightface/tree/master/recognition/arcface_torch) |
+| File | Model | Size | Notes |
+|------|-------|------|-------|
+| `scrfd_10g_kps.onnx` | SCRFD-10G Face Detector | ~17MB | Best InsightFace detector |
+| `adaface_ir101.onnx` | AdaFace IR-101 Recognizer | ~170MB | State-of-the-art for low-quality images |
 
-## How to Get the Models
+## Download
 
-### SCRFD Detector
 ```bash
-# Download scrfd_500m_kps from InsightFace
-# Export to ONNX using:
-python -m mxnet_to_onnx scrfd_500m_kps
-# Or use the pre-exported ONNX from:
-# https://github.com/deepinsight/insightface/releases
-```
-
-### MobileFaceNet Recognizer
-```bash
-# Use the ArcFace MobileFaceNet ONNX export:
-# Model: mobilefacenet from insightface model zoo
-# Input: [1, 3, 112, 112], normalized to [-1, 1]
-# Output: [1, 512] L2-normalized embedding
+# From yakhyo/adaface-onnx releases:
+curl -L -o scrfd_10g_kps.onnx "https://github.com/yakhyo/adaface-onnx/releases/download/weights/det_10g.onnx"
+curl -L -o adaface_ir101.onnx "https://github.com/yakhyo/adaface-onnx/releases/download/weights/adaface_ir_101.onnx"
 ```
 
 ## Input Specifications
 
-### SCRFD Input
-- Input: `input.1` — shape `[1, 3, 640, 640]`
+### SCRFD-10G Detector
+- Input: shape `[1, 3, 640, 640]`
 - Normalization: `(pixel - 127.5) / 128.0`
-- Outputs: `score_8, score_16, score_32, bbox_8, bbox_16, bbox_32, kps_8, kps_16, kps_32`
+- Outputs: 9 tensors (scores, boxes, keypoints at strides 8/16/32)
 
-### MobileFaceNet Input  
-- Input: shape `[1, 3, 112, 112]`
-- Normalization: `(pixel - 127.5) / 128.0`
+### AdaFace IR-101 Recognizer
+- Input: shape `[1, 3, 112, 112]` (112×112 aligned face crop)
+- Normalization: `(pixel - 127.5) / 127.5` ← different from ArcFace (128.0)!
 - Output: `[1, 512]` L2-normalized embedding
+- Trained on: MS1MV2 (5.8M images, 85K identities)
 
-## Alternative: ms1mv3 MobileFaceNet
-A commonly used ONNX-compatible model is available via `buffalo_s` from the InsightFace model zoo:
-```
-https://github.com/deepinsight/insightface/releases/tag/v0.7
-```
+## Why AdaFace IR-101?
+
+AdaFace uses **quality-adaptive margin** — it automatically handles low-quality images
+(small faces, bad lighting, motion blur) which is exactly the challenge in classroom
+group photos. IR-101 (IResNet-101 backbone) is the largest and most accurate variant.
 
 ## Placement
-After downloading, copy both `.onnx` files into:
-```
-attendance-thingy/assets/models/
-├── scrfd_500m_kps.onnx
-└── mobilefacenet.onnx
+
+Download models locally (they are **gitignored** — GitHub rejects files > 100MB):
+
+```bash
+npm run download-models
 ```
 
-The app copies them from assets to the document directory on first launch.
+```
+attendance-thingy/assets/models/
+├── scrfd_10g_kps.onnx     (~17MB)
+└── adaface_ir101.onnx     (~249MB)
+```
