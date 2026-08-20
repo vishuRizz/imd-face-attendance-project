@@ -173,53 +173,46 @@ export default function ScanScreen() {
     <View style={styles.container}>
       <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
 
-      {/* Overlay grid guide */}
-      <View style={styles.gridOverlay} pointerEvents="none">
-        <View style={styles.gridHLine} />
-        <View style={styles.gridVLine} />
-      </View>
+      <View style={styles.cameraShade} pointerEvents="none" />
+      <View style={styles.viewfinder} pointerEvents="none" />
 
-      {/* Top bar */}
       <SafeAreaView style={styles.topBar}>
         <View style={styles.topBarContent}>
-          <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}><Ionicons name="close" size={22} color="#fff" /></TouchableOpacity>
-          <View>
-            <Text style={styles.topTitle}>Scan attendance</Text>
-            <Text style={styles.topHint}>Fit all students in frame</Text>
+          <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}><Ionicons name="chevron-back" size={23} color="#fff" /></TouchableOpacity>
+          <View style={styles.topCopy}>
+            <Text style={styles.topKicker}>ATTENDANCE SCAN</Text>
+            <Text style={styles.topTitle}>Frame the class</Text>
           </View>
-          <View style={styles.liveBadge}><View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text></View>
         </View>
       </SafeAreaView>
 
-      {/* Bottom bar */}
+      <View style={styles.guidance} pointerEvents="none">
+        <Ionicons name="people-outline" size={17} color="#FFFFFF" />
+        <Text style={styles.guidanceText}>Keep all faces clearly visible</Text>
+      </View>
+
       <View style={styles.bottomBar}>
-        {/* Gallery button */}
+        <Text style={styles.captureTitle}>Ready to take attendance</Text>
+        <Text style={styles.captureHint}>Capture one clear group photo. You can scan again anytime.</Text>
+        <TouchableOpacity
+          id="btn-capture-group"
+          style={styles.captureButton}
+          onPress={handleCapture}
+          disabled={state === 'capturing'}
+          activeOpacity={0.85}
+        >
+          {state === 'capturing' ? <ActivityIndicator color={Colors.textOnPrimary} /> : <Ionicons name="camera" size={20} color={Colors.textOnPrimary} />}
+          <Text style={styles.captureButtonText}>{state === 'capturing' ? 'Capturing…' : 'Capture photo'}</Text>
+        </TouchableOpacity>
         <TouchableOpacity
           id="btn-pick-gallery"
           style={styles.galleryButton}
           onPress={handleGallery}
           disabled={state === 'capturing'}
         >
-          <View style={styles.galleryIcon}><Ionicons name="images-outline" size={23} color={Colors.textPrimary} /></View>
-          <Text style={styles.galleryText}>Gallery</Text>
+          <Ionicons name="images-outline" size={18} color={Colors.primary} />
+          <Text style={styles.galleryText}>Use a photo from gallery</Text>
         </TouchableOpacity>
-
-        {/* Capture button */}
-        <TouchableOpacity
-          id="btn-capture-group"
-          style={styles.captureButton}
-          onPress={handleCapture}
-          disabled={state === 'capturing'}
-          activeOpacity={0.8}
-        >
-          {state === 'capturing' ? (
-            <ActivityIndicator color={Colors.primary} size="large" />
-          ) : (
-            <View style={styles.captureInner} />
-          )}
-        </TouchableOpacity>
-
-        <View style={styles.galleryButton} />
       </View>
 
       {state === 'error' && (
@@ -256,59 +249,55 @@ const styles = StyleSheet.create({
   processingTitle: { ...Typography.heading3, color: Colors.textPrimary, marginBottom: Spacing.xs },
   processingStatus: { ...Typography.bodySmall, color: Colors.textSecondary, textAlign: 'center' },
 
-  gridOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
-  gridHLine: { position: 'absolute', width: '100%', height: 1, backgroundColor: 'rgba(255,255,255,0.15)' },
-  gridVLine: { position: 'absolute', height: '100%', width: 1, backgroundColor: 'rgba(255,255,255,0.15)' },
+  cameraShade: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(8, 20, 12, 0.12)' },
+  viewfinder: { position: 'absolute', top: '23%', left: Spacing.lg, right: Spacing.lg, bottom: 255, borderWidth: 2, borderColor: 'rgba(255,255,255,0.88)', borderRadius: Radius.xl },
 
   topBar: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(0,0,0,0.6)',
     paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.md,
   },
-  topBarContent: { alignItems: 'center', justifyContent: 'space-between', flexDirection: 'row', paddingTop: Spacing.sm },
-  closeButton: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
-  topTitle: { ...Typography.heading3, color: Colors.textPrimary },
-  topHint: { ...Typography.caption, color: Colors.textSecondary, marginTop: 2 },
+  topBarContent: { alignItems: 'center', flexDirection: 'row', paddingTop: Spacing.sm },
+  closeButton: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(0,0,0,0.34)', justifyContent: 'center', alignItems: 'center' },
+  topCopy: { marginLeft: 12 },
+  topKicker: { ...Typography.label, color: 'rgba(255,255,255,0.72)', marginBottom: 2 },
+  topTitle: { ...Typography.heading3, color: '#FFFFFF' },
+  guidance: { position: 'absolute', bottom: 226, left: Spacing.lg, right: Spacing.lg, backgroundColor: 'rgba(0, 0, 0, 0.44)', paddingHorizontal: 12, paddingVertical: 9, borderRadius: Radius.full, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 7, alignSelf: 'center' },
+  guidanceText: { ...Typography.caption, color: '#FFFFFF', fontWeight: '700' },
 
   bottomBar: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    backgroundColor: 'rgba(13,13,26,0.92)',
-    paddingVertical: Spacing.lg,
-    paddingBottom: 40,
+    backgroundColor: Colors.bgCard,
+    padding: Spacing.lg,
+    paddingBottom: Spacing.xl,
     borderTopLeftRadius: Radius.xl,
     borderTopRightRadius: Radius.xl,
   },
+  captureTitle: { ...Typography.heading3, color: Colors.textPrimary, textAlign: 'center' },
+  captureHint: { ...Typography.bodySmall, color: Colors.textSecondary, textAlign: 'center', marginTop: 4, marginBottom: Spacing.md },
   galleryButton: {
-    width: 70,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 7,
+    paddingTop: 14,
   },
-  galleryIcon: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
-  galleryText: { ...Typography.caption, color: Colors.textSecondary, marginTop: 4 },
-  liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: Radius.full, paddingHorizontal: 9, paddingVertical: 6 },
-  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.accent },
-  liveText: { ...Typography.caption, color: Colors.textPrimary, fontWeight: '700', letterSpacing: 0.5 },
+  galleryText: { ...Typography.bodySmall, color: Colors.primary, fontWeight: '700' },
   captureButton: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    minHeight: 54,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 3,
-    borderColor: Colors.textPrimary,
+    flexDirection: 'row',
+    gap: 8,
   },
-  captureInner: { width: 52, height: 52, borderRadius: 26, backgroundColor: Colors.textPrimary },
+  captureButtonText: { ...Typography.heading3, color: Colors.textOnPrimary },
   errorBanner: {
     position: 'absolute',
     top: 120,

@@ -151,7 +151,7 @@ export default function ReviewScreen() {
         }
       });
       Alert.alert('Attendance Saved', 'Attendance has been confirmed and saved.', [
-        { text: 'OK', onPress: () => router.replace('/') },
+        { text: 'OK', onPress: () => router.replace(classId ? `/class/${classId}` : '/') },
       ]);
     } catch (e: any) {
       Alert.alert('Error', e.message);
@@ -249,18 +249,20 @@ export default function ReviewScreen() {
   const allRecords = Array.from(recordMap.values());
   const presentCount = allRecords.filter(r => r.status === 'present').length;
   const uncertainCount = allRecords.filter(r => r.status === 'uncertain').length;
+  const absentCount = allRecords.filter(r => r.status === 'absent').length;
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Summary bar */}
-      <View style={styles.summaryBar}>
-        <SummaryPill label="Present" count={presentCount} color={Colors.present} />
-        <SummaryPill label="Uncertain" count={uncertainCount} color={Colors.uncertain} />
-        <SummaryPill
-          label="Absent"
-          count={allRecords.filter(r => r.status === 'absent').length}
-          color={Colors.absent}
-        />
+      <View style={styles.summaryCard}>
+        <View>
+          <Text style={styles.summaryEyebrow}>ATTENDANCE SUMMARY</Text>
+          <Text style={styles.summaryCount}>{presentCount}<Text style={styles.summaryUnit}> present</Text></Text>
+        </View>
+        <View style={styles.summaryMetrics}>
+          <SummaryMetric label="Review" count={uncertainCount} />
+          <View style={styles.metricDivider} />
+          <SummaryMetric label="Absent" count={absentCount} />
+        </View>
       </View>
 
       {uncertainCount > 0 && (
@@ -299,37 +301,30 @@ export default function ReviewScreen() {
   );
 }
 
-function SummaryPill({ label, count, color }: { label: string; count: number; color: string }) {
+function SummaryMetric({ label, count }: { label: string; count: number }) {
   return (
-    <View style={[pillStyles.pill, { borderColor: color + '40' }]}>
-      <Text style={[pillStyles.count, { color }]}>{count}</Text>
+    <View style={pillStyles.metric}>
+      <Text style={pillStyles.count}>{count}</Text>
       <Text style={pillStyles.label}>{label}</Text>
     </View>
   );
 }
 
 const pillStyles = StyleSheet.create({
-  pill: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    backgroundColor: Colors.bgCard,
-  },
-  count: { ...Typography.heading3, fontWeight: '700' },
-  label: { ...Typography.caption, color: Colors.textMuted },
+  metric: { alignItems: 'center' },
+  count: { ...Typography.heading3, fontWeight: '800', color: '#FFFFFF' },
+  label: { ...Typography.caption, color: '#B7D6BF', marginTop: 2 },
 });
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bg },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  summaryBar: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    padding: Spacing.md,
-    paddingTop: 0,
-  },
+  summaryCard: { margin: Spacing.md, marginTop: 0, padding: Spacing.md, borderRadius: Radius.xl, backgroundColor: '#173C27', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  summaryEyebrow: { ...Typography.label, color: '#B7D6BF', marginBottom: 5 },
+  summaryCount: { fontSize: 29, lineHeight: 34, fontWeight: '800', letterSpacing: -0.7, color: '#FFFFFF' },
+  summaryUnit: { fontSize: 14, letterSpacing: 0, fontWeight: '600', color: '#E5F5D7' },
+  summaryMetrics: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  metricDivider: { width: 1, height: 28, backgroundColor: 'rgba(255,255,255,0.2)' },
   reviewNote: {
     marginHorizontal: Spacing.md,
     backgroundColor: Colors.warningBg,
@@ -343,22 +338,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   reviewNoteText: { ...Typography.bodySmall, color: Colors.warning, textAlign: 'center', flex: 1 },
-  list: { padding: Spacing.md, paddingBottom: 100 },
+  list: { paddingHorizontal: Spacing.md, paddingBottom: 104 },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.xs,
     paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.sm,
-    borderBottomWidth: 1,
-    marginBottom: Spacing.xs,
-    marginTop: Spacing.sm,
+    marginBottom: 2,
+    marginTop: Spacing.md,
   },
   sectionTitle: { ...Typography.label },
   recordRow: {
     backgroundColor: Colors.bgCard,
-    borderRadius: Radius.lg,
-    padding: Spacing.sm,
+    borderRadius: Radius.md,
+    padding: 12,
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: Spacing.xs,
@@ -377,7 +370,7 @@ const styles = StyleSheet.create({
   recordAvatarText: { ...Typography.body, fontWeight: '700', color: Colors.textPrimary },
   recordInfo: { flex: 1 },
   recordName: { ...Typography.body, color: Colors.textPrimary, fontWeight: '600' },
-  recordConfidence: { ...Typography.caption, color: Colors.textMuted },
+  recordConfidence: { ...Typography.caption, color: Colors.textMuted, marginTop: 2 },
   recordActions: { flexDirection: 'row', gap: Spacing.xs },
   actionBtn: {
     backgroundColor: Colors.successBg,
@@ -395,7 +388,9 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    padding: Spacing.lg,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.lg,
     backgroundColor: Colors.bg,
     borderTopWidth: 1,
     borderTopColor: Colors.border,

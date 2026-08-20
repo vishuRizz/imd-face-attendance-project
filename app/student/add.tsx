@@ -123,10 +123,10 @@ const fieldStyles = StyleSheet.create({
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bg },
   content: { padding: Spacing.lg, paddingTop: Spacing.xl, paddingBottom: Spacing.xxl },
-  heroIcon: { width: 52, height: 52, borderRadius: Radius.lg, backgroundColor: Colors.accent + '18', justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.lg },
+  heroIcon: { width: 60, height: 60, borderRadius: 20, backgroundColor: '#FFF1CF', justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.lg },
   heading: { ...Typography.heading2, color: Colors.textPrimary, marginBottom: Spacing.xs },
   subheading: { ...Typography.body, color: Colors.textSecondary, marginBottom: Spacing.xl },
-  form: { marginBottom: Spacing.lg },
+  form: { marginBottom: Spacing.lg, backgroundColor: Colors.bgCard, borderRadius: Radius.xl, padding: Spacing.md, borderWidth: 1, borderColor: Colors.border },
   note: {
     backgroundColor: Colors.primary + '15',
     borderRadius: Radius.md,
@@ -149,7 +149,7 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     shadowColor: Colors.primary,
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
+    shadowOpacity: 0.22,
     shadowRadius: 12,
     elevation: 6,
   },

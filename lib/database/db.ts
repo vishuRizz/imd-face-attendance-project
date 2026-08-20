@@ -90,6 +90,11 @@ async function initializeDatabase(database: SQLite.SQLiteDatabase) {
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
 
+  await database.runAsync(`CREATE TABLE IF NOT EXISTS sync_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`);
+
   await database.runAsync('CREATE INDEX IF NOT EXISTS idx_students_class ON students(class_id)');
   await database.runAsync('CREATE INDEX IF NOT EXISTS idx_embeddings_student ON face_embeddings(student_id)');
   await database.runAsync('CREATE INDEX IF NOT EXISTS idx_attendance_class ON attendance(class_id)');
@@ -321,7 +326,7 @@ export async function saveAttendanceRecords(
 export async function getAttendanceHistory(classId: number): Promise<AttendanceWithRecords[]> {
   const database = await getDb();
   const sessions = await database.getAllAsync<any>(
-    `SELECT * FROM attendance WHERE class_id = ? ORDER BY date DESC`,
+    `SELECT * FROM attendance WHERE class_id = ? ORDER BY date DESC, id DESC`,
     [classId]
   );
 
@@ -348,6 +353,41 @@ export async function getAttendanceHistory(classId: number): Promise<AttendanceW
     });
   }
   return result;
+}
+
+// ─── Cloud sync ──────────────────────────────────────────────────────────────
+
+export type SyncSnapshot = {
+  deviceId: string;
+  classes: Record<string, unknown>[];
+  students: Record<string, unknown>[];
+  embeddings: Record<string, unknown>[];
+  attendance: Record<string, unknown>[];
+  attendanceRecords: Record<string, unknown>[];
+};
+
+/**
+ * Returns a complete, local-first snapshot. Re-sending this payload is safe:
+ * records are upserted remotely by the stable local id plus installation id.
+ */
+export async function getSyncSnapshot(): Promise<SyncSnapshot> {
+  const database = await getDb();
+  const existing = await database.getFirstAsync<{ value: string }>(
+    `SELECT value FROM sync_metadata WHERE key = 'device_id'`
+  );
+  const deviceId = existing?.value ?? `facescan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  if (!existing) {
+    await database.runAsync(`INSERT INTO sync_metadata (key, value) VALUES ('device_id', ?)`, [deviceId]);
+  }
+
+  const [classes, students, embeddings, attendance, attendanceRecords] = await Promise.all([
+    database.getAllAsync<Record<string, unknown>>(`SELECT * FROM classes`),
+    database.getAllAsync<Record<string, unknown>>(`SELECT * FROM students`),
+    database.getAllAsync<Record<string, unknown>>(`SELECT * FROM face_embeddings`),
+    database.getAllAsync<Record<string, unknown>>(`SELECT * FROM attendance`),
+    database.getAllAsync<Record<string, unknown>>(`SELECT * FROM attendance_records`),
+  ]);
+  return { deviceId, classes, students, embeddings, attendance, attendanceRecords };
 }
 
 // ─── Mappers ─────────────────────────────────────────────────────────────────

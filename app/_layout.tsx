@@ -3,23 +3,25 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { initMLModels } from '@/lib/ml/FaceMLClient';
+import { startCloudSync } from '@/lib/sync/cloud-sync';
 
 export default function RootLayout() {
   useEffect(() => {
     // Initialize ML models on app start (non-blocking)
     initMLModels().catch(console.warn);
+    return startCloudSync();
   }, []);
 
   return (
     <SafeAreaProvider>
-      <StatusBar style="light" backgroundColor="#0A0B14" />
+      <StatusBar style="dark" backgroundColor="#F6F7F4" />
       <Stack
         screenOptions={{
-          headerStyle: { backgroundColor: '#0A0B14' },
-          headerTintColor: '#FFFFFF',
-          headerTitleStyle: { fontWeight: '700', fontSize: 18 },
+          headerStyle: { backgroundColor: '#F6F7F4' },
+          headerTintColor: '#172019',
+          headerTitleStyle: { fontWeight: '800', fontSize: 18 },
           headerShadowVisible: false,
-          contentStyle: { backgroundColor: '#0A0B14' },
+          contentStyle: { backgroundColor: '#F6F7F4' },
           animation: 'slide_from_right',
         }}
       >
