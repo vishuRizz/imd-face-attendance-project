@@ -1,81 +1,151 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { getAllClasses, type ClassWithStats } from '@/lib/database/db';
-import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
+import { Colors, Radius, Shadow, Spacing, Typography, avatarTint } from '@/constants/theme';
+import { Badge, Button, EmptyState, IconButton, Tap, initialsOf } from '@/components/kit';
 
-const initials = (name: string) => name.split(' ').map((word) => word[0]).join('').slice(0, 2).toUpperCase();
+const greeting = () => {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+};
 
-export default function DashboardScreen() {
+export default function HomeScreen() {
   const router = useRouter();
   const [classes, setClasses] = useState<ClassWithStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const loadClasses = useCallback(async () => {
-    try { setClasses(await getAllClasses()); } catch (error) { console.error(error); }
+  const load = useCallback(async () => {
+    try { setClasses(await getAllClasses()); } catch (e) { console.error(e); }
     finally { setLoading(false); setRefreshing(false); }
   }, []);
 
-  useFocusEffect(useCallback(() => { loadClasses(); }, [loadClasses]));
-  const totalStudents = classes.reduce((total, item) => total + item.studentCount, 0);
-  const enrolledStudents = classes.reduce((total, item) => total + item.enrolledCount, 0);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const renderClassCard = ({ item, index }: { item: ClassWithStats; index: number }) => {
-    const enrollment = item.studentCount ? Math.round((item.enrolledCount / item.studentCount) * 100) : 0;
-    return (
-      <TouchableOpacity id={`class-card-${item.id}`} style={styles.card} onPress={() => router.push(`/class/${item.id}`)} activeOpacity={0.82}>
-        <View style={styles.cardTop}>
-          <View style={[styles.classIcon, index % 2 ? styles.classIconGold : undefined]}>
-            <Text style={[styles.classIconText, index % 2 ? styles.classIconTextGold : undefined]}>{initials(item.name)}</Text>
-          </View>
-          <View style={styles.cardInfo}><Text style={styles.className}>{item.name}</Text><Text style={styles.classSection}>{item.section}{item.semester ? ` · ${item.semester}` : ''}</Text></View>
-          <View style={styles.arrow}><Ionicons name="arrow-forward" size={18} color={Colors.textPrimary} /></View>
-        </View>
-        <View style={styles.cardDivider} />
-        <View style={styles.cardBottom}>
-          <View><Text style={styles.metaValue}>{item.studentCount}</Text><Text style={styles.metaLabel}>STUDENTS</Text></View>
-          <View style={styles.progressWrap}><View style={styles.progressLabels}><Text style={styles.enrolledText}>{item.enrolledCount} enrolled</Text><Text style={styles.percent}>{enrollment}%</Text></View><View style={styles.track}><View style={[styles.bar, { width: `${enrollment}%` }]} /></View></View>
-        </View>
-      </TouchableOpacity>
-    );
-  };
+  const markedToday = classes.filter(c => c.todaySessionId).length;
+  const presentToday = classes.reduce((n, c) => n + (c.todayPresent ?? 0), 0);
+  const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
 
-  if (loading) return <SafeAreaView style={styles.container}><View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View></SafeAreaView>;
+  if (loading) {
+    return <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>;
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <FlatList
-        data={classes} keyExtractor={(item) => item.id.toString()} renderItem={renderClassCard}
-        contentContainerStyle={[styles.list, classes.length === 0 && styles.listEmpty]}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadClasses(); }} tintColor={Colors.primary} />}
-        ListHeaderComponent={<>
-          <View style={styles.header}><View><Text style={styles.greeting}>ATTENDANCE HUB</Text><Text style={styles.title}>Good morning.</Text><Text style={styles.subtitle}>Everything for today, in one place.</Text></View><View style={styles.profile}><Ionicons name="person-outline" size={21} color={Colors.primaryDark} /></View></View>
-          <View style={styles.summary}><View style={styles.summaryIcon}><Ionicons name="people" size={22} color={Colors.primary} /></View><View style={styles.summaryCopy}><Text style={styles.summaryTitle}>{totalStudents} students across {classes.length} classes</Text><Text style={styles.summarySub}>{enrolledStudents} ready for face scan</Text></View></View>
-          {classes.length > 0 && <View style={styles.sectionRow}><Text style={styles.sectionTitle}>YOUR CLASSES</Text><Text style={styles.sectionCount}>{classes.length} active</Text></View>}
-        </>}
-        ListEmptyComponent={<View style={styles.emptyState}><View style={styles.emptyArtwork}><View style={styles.emptyCircle}><Ionicons name="school-outline" size={42} color={Colors.primary} /></View><View style={styles.emptySpark}><Ionicons name="sparkles" size={16} color={Colors.accentDark} /></View></View><Text style={styles.emptyTitle}>Your day starts here</Text><Text style={styles.emptySubtitle}>Create a class to enroll students and take attendance in seconds.</Text></View>}
+        data={classes}
+        keyExtractor={c => String(c.id)}
+        contentContainerStyle={styles.list}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
+        ListHeaderComponent={
+          <>
+            <View style={styles.header}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.date}>{today}</Text>
+                <Text style={styles.title}>{greeting()}</Text>
+              </View>
+              <IconButton icon="add" accessibilityLabel="Create class" onPress={() => router.push('/class/create')} />
+            </View>
+
+            {classes.length > 0 && (
+              <View style={styles.hero}>
+                <View style={styles.heroRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.heroLabel}>Today</Text>
+                    <Text style={styles.heroValue}>
+                      {markedToday}<Text style={styles.heroValueMuted}>/{classes.length} classes marked</Text>
+                    </Text>
+                  </View>
+                  <View style={styles.heroIcon}><Ionicons name="scan" size={22} color="#000" /></View>
+                </View>
+                <View style={styles.heroDivider} />
+                <Text style={styles.heroFoot}>
+                  {presentToday > 0 ? `${presentToday} students checked in so far` : 'Open a class and point the camera — attendance marks itself.'}
+                </Text>
+              </View>
+            )}
+
+            {classes.length > 0 && <Text style={styles.sectionTitle}>Your classes</Text>}
+          </>
+        }
+        renderItem={({ item }) => <ClassCard item={item} onOpen={() => router.push(`/class/${item.id}`)} onScan={() => router.push(`/attendance/scan/${item.id}`)} />}
+        ListEmptyComponent={
+          <EmptyState icon="school-outline" title="Set up your first class" body="Add a class and your students. After a one-time face setup, attendance takes seconds.">
+            <Button title="Create class" icon="add" onPress={() => router.push('/class/create')} style={{ alignSelf: 'stretch' }} />
+          </EmptyState>
+        }
       />
-      <TouchableOpacity id="fab-create-class" style={styles.fab} onPress={() => router.push('/class/create')} activeOpacity={0.86}><Ionicons name="add" size={22} color={Colors.textOnPrimary} /><Text style={styles.fabText}>Create class</Text></TouchableOpacity>
     </SafeAreaView>
   );
 }
 
+function ClassCard({ item, onOpen, onScan }: { item: ClassWithStats; onOpen: () => void; onScan: () => void }) {
+  const tint = avatarTint(item.name);
+  const ready = item.enrolledCount > 0;
+  const pending = item.studentCount - item.enrolledCount;
+  return (
+    <Tap onPress={onOpen} style={styles.card} scaleTo={0.985}>
+      <View style={styles.cardTop}>
+        <View style={[styles.mono, { backgroundColor: tint.bg }]}>
+          <Text style={[styles.monoText, { color: tint.fg }]}>{initialsOf(item.name)}</Text>
+        </View>
+        <View style={{ flex: 1, marginLeft: 14 }}>
+          <Text style={styles.cardTitle} numberOfLines={1}>{item.name}</Text>
+          <Text style={styles.cardSub} numberOfLines={1}>
+            {[item.section, item.semester].filter(Boolean).join(' · ')} · {item.studentCount} student{item.studentCount === 1 ? '' : 's'}
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+      </View>
+
+      <View style={styles.cardBottom}>
+        {item.todaySessionId ? (
+          <Badge tone="success" icon="checkmark" label={`Marked · ${item.todayPresent ?? 0}/${item.enrolledCount}`} />
+        ) : pending > 0 ? (
+          <Badge tone="warning" label={`${pending} need face setup`} />
+        ) : item.studentCount === 0 ? (
+          <Badge label="No students yet" />
+        ) : (
+          <Badge label="Not marked today" />
+        )}
+        <View style={{ flex: 1 }} />
+        {ready ? (
+          <Button size="sm" title={item.todaySessionId ? 'Scan again' : 'Take attendance'} icon="scan" onPress={onScan} />
+        ) : (
+          <Button size="sm" variant="secondary" title="Set up" iconRight="arrow-forward" onPress={onOpen} />
+        )}
+      </View>
+    </Tap>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.bg }, center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  list: { paddingHorizontal: Spacing.lg, paddingBottom: 112 }, listEmpty: { flexGrow: 1 },
-  header: { paddingTop: Spacing.lg, paddingBottom: Spacing.xl, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  greeting: { ...Typography.label, color: Colors.primary, marginBottom: 7 }, title: { ...Typography.heading1, color: Colors.textPrimary }, subtitle: { ...Typography.bodySmall, color: Colors.textSecondary, marginTop: 5 },
-  profile: { width: 44, height: 44, backgroundColor: Colors.primaryLight, borderRadius: Radius.full, justifyContent: 'center', alignItems: 'center' },
-  summary: { backgroundColor: '#173C27', borderRadius: Radius.xl, padding: Spacing.md, flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.xl, shadowColor: '#173C27', shadowOpacity: 0.12, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 2 },
-  summaryIcon: { width: 46, height: 46, borderRadius: Radius.md, backgroundColor: '#E5F5D7', alignItems: 'center', justifyContent: 'center', marginRight: Spacing.md }, summaryCopy: { flex: 1 }, summaryTitle: { ...Typography.bodySmall, color: '#FFFFFF', fontWeight: '700' }, summarySub: { ...Typography.caption, color: '#B7D6BF', marginTop: 4 },
-  sectionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: Spacing.sm }, sectionTitle: { ...Typography.label, color: Colors.textMuted }, sectionCount: { ...Typography.caption, color: Colors.primary, fontWeight: '700' },
-  card: { backgroundColor: Colors.bgCard, borderRadius: Radius.xl, padding: Spacing.md, marginBottom: Spacing.sm, borderWidth: 1, borderColor: Colors.border, shadowColor: '#142119', shadowOpacity: 0.035, shadowRadius: 12, shadowOffset: { width: 0, height: 5 }, elevation: 1 },
-  cardTop: { flexDirection: 'row', alignItems: 'center' }, classIcon: { width: 50, height: 50, borderRadius: 15, backgroundColor: Colors.primaryLight, alignItems: 'center', justifyContent: 'center' }, classIconGold: { backgroundColor: '#FFF1CF' }, classIconText: { ...Typography.heading3, color: Colors.primaryDark }, classIconTextGold: { color: Colors.accentDark }, cardInfo: { flex: 1, marginLeft: 12 }, className: { ...Typography.heading3, color: Colors.textPrimary }, classSection: { ...Typography.bodySmall, color: Colors.textSecondary, marginTop: 3 }, arrow: { width: 34, height: 34, backgroundColor: Colors.bgElevated, borderRadius: Radius.full, justifyContent: 'center', alignItems: 'center' },
-  cardDivider: { height: 1, backgroundColor: Colors.border, marginVertical: Spacing.md }, cardBottom: { flexDirection: 'row', alignItems: 'center' }, metaValue: { ...Typography.heading3, color: Colors.textPrimary }, metaLabel: { ...Typography.caption, color: Colors.textMuted, letterSpacing: 0.5, marginTop: 1 }, progressWrap: { flex: 1, marginLeft: Spacing.lg }, progressLabels: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }, enrolledText: { ...Typography.caption, color: Colors.textSecondary }, percent: { ...Typography.caption, color: Colors.primary, fontWeight: '700' }, track: { height: 6, borderRadius: Radius.full, backgroundColor: Colors.bgSubtle, overflow: 'hidden' }, bar: { height: '100%', borderRadius: Radius.full, backgroundColor: Colors.primary },
-  emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: Spacing.xl, paddingBottom: 80 }, emptyArtwork: { width: 120, height: 110, marginBottom: Spacing.lg, alignItems: 'center', justifyContent: 'center' }, emptyCircle: { width: 94, height: 94, borderRadius: 47, backgroundColor: Colors.primaryLight, alignItems: 'center', justifyContent: 'center' }, emptySpark: { position: 'absolute', top: 4, right: 5, width: 32, height: 32, borderRadius: 16, backgroundColor: '#FFF1CF', justifyContent: 'center', alignItems: 'center' }, emptyTitle: { ...Typography.heading2, color: Colors.textPrimary, textAlign: 'center' }, emptySubtitle: { ...Typography.body, color: Colors.textSecondary, textAlign: 'center', marginTop: Spacing.sm, lineHeight: 23 },
-  fab: { position: 'absolute', left: Spacing.lg, right: Spacing.lg, bottom: Spacing.md, minHeight: 56, borderRadius: 18, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8, shadowColor: Colors.primaryDark, shadowOpacity: 0.28, shadowRadius: 14, shadowOffset: { width: 0, height: 8 }, elevation: 7 }, fabText: { ...Typography.heading3, color: Colors.textOnPrimary },
+  container: { flex: 1, backgroundColor: Colors.bg },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.bg },
+  list: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.xxl, flexGrow: 1 },
+  header: { flexDirection: 'row', alignItems: 'center', paddingTop: Spacing.md, paddingBottom: Spacing.lg },
+  date: { ...Typography.bodySmall, color: Colors.textSecondary, marginBottom: 2 },
+  title: { ...Typography.heading1, color: Colors.textPrimary },
+  hero: { backgroundColor: Colors.bgInverse, borderRadius: Radius.xl, padding: Spacing.lg, marginBottom: Spacing.xl },
+  heroRow: { flexDirection: 'row', alignItems: 'center' },
+  heroLabel: { ...Typography.bodySmall, color: Colors.textOnInverseMuted, marginBottom: 4 },
+  heroValue: { fontSize: 34, fontWeight: '800', color: '#FFFFFF', letterSpacing: -1 },
+  heroValueMuted: { fontSize: 16, fontWeight: '600', color: Colors.textOnInverseMuted, letterSpacing: 0 },
+  heroIcon: { width: 48, height: 48, borderRadius: 24, backgroundColor: Colors.accent, alignItems: 'center', justifyContent: 'center' },
+  heroDivider: { height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.2)', marginVertical: 14 },
+  heroFoot: { ...Typography.bodySmall, color: 'rgba(255,255,255,0.82)' },
+  sectionTitle: { ...Typography.heading2, color: Colors.textPrimary, marginBottom: 12 },
+  card: { backgroundColor: Colors.bgCard, borderRadius: Radius.lg, padding: Spacing.md, marginBottom: 12, borderWidth: 1, borderColor: Colors.border, ...Shadow.card },
+  cardTop: { flexDirection: 'row', alignItems: 'center' },
+  mono: { width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  monoText: { fontSize: 17, fontWeight: '800' },
+  cardTitle: { ...Typography.heading3, color: Colors.textPrimary },
+  cardSub: { ...Typography.bodySmall, color: Colors.textSecondary, marginTop: 2 },
+  cardBottom: { flexDirection: 'row', alignItems: 'center', marginTop: 14, paddingTop: 14, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.border },
 });

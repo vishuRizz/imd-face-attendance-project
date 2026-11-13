@@ -1,14 +1,24 @@
-import React, { useCallback, useState } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import React, { useCallback, useLayoutEffect, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter, useNavigation } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { getClassById, getStudentsForClass, deleteStudent, deleteClass, getAttendanceHistory, type StudentWithEmbeddings, type AttendanceWithRecords } from '@/lib/database/db';
+import {
+  deleteClass,
+  deleteStudent,
+  getAttendanceHistory,
+  getClassById,
+  getStudentsForClass,
+  localDateKey,
+  type AttendanceWithRecords,
+  type StudentWithEmbeddings,
+} from '@/lib/database/db';
 import type { Class } from '@/lib/database/schema';
-import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
+import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { Avatar, Badge, Button, EmptyState, IconButton, ProgressBar, Segmented, Sheet, Tap } from '@/components/kit';
 
-const todayKey = () => new Date().toISOString().slice(0, 10);
+type Tab = 'students' | 'history';
 
 export default function ClassScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -19,91 +29,205 @@ export default function ClassScreen() {
   const [students, setStudents] = useState<StudentWithEmbeddings[]>([]);
   const [history, setHistory] = useState<AttendanceWithRecords[]>([]);
   const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<Tab>('students');
+  const [selected, setSelected] = useState<StudentWithEmbeddings | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [classData, studentData, historyData] = await Promise.all([getClassById(classId), getStudentsForClass(classId), getAttendanceHistory(classId)]);
-      setCls(classData); setStudents(studentData); setHistory(historyData);
-      navigation.setOptions({ title: classData.name });
-    } catch (error) { console.error(error); }
+      const [c, s, h] = await Promise.all([getClassById(classId), getStudentsForClass(classId), getAttendanceHistory(classId)]);
+      setCls(c); setStudents(s); setHistory(h);
+    } catch (e) { console.error(e); }
     finally { setLoading(false); }
-  }, [classId, navigation]);
+  }, [classId]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const removeStudent = (student: StudentWithEmbeddings) => Alert.alert('Remove student?', `${student.name}'s face data will also be removed.`, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Remove', style: 'destructive', onPress: async () => { await deleteStudent(student.id); setStudents(current => current.filter(item => item.id !== student.id)); } },
-  ]);
+  const confirmDeleteClass = useCallback(() => {
+    Alert.alert('Delete this class?', 'Students, face data and attendance history for this class will be permanently removed.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: async () => { await deleteClass(classId); router.replace('/'); } },
+    ]);
+  }, [classId, router]);
 
-  const removeClass = () => Alert.alert('Delete class?', `This will remove ${cls?.name}, its students, and all attendance history.`, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Delete class', style: 'destructive', onPress: async () => { await deleteClass(classId); router.replace('/'); } },
-  ]);
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <IconButton icon="person-add-outline" size={38} accessibilityLabel="Add students" onPress={() => router.push({ pathname: '/student/add', params: { classId: String(classId) } })} />
+          <IconButton icon="trash-outline" size={38} accessibilityLabel="Delete class" onPress={confirmDeleteClass} />
+        </View>
+      ),
+    });
+  }, [navigation, router, classId, confirmDeleteClass]);
 
-  const enrolledCount = students.filter(student => student.isEnrolled).length;
-  const todaysAttendance = history.find(session => session.date === todayKey());
-  const previousSessions = history.filter(session => session.id !== todaysAttendance?.id);
-  const canScan = enrolledCount > 0;
+  const enrolled = students.filter(s => s.isEnrolled);
+  const pending = students.filter(s => !s.isEnrolled);
+  const today = history.find(h => h.date === localDateKey());
+  const canScan = enrolled.length > 0;
 
-  const renderStudent = ({ item }: { item: StudentWithEmbeddings }) => (
-    <View style={styles.studentRow} id={`student-${item.id}`}>
-      <View style={[styles.avatar, !item.isEnrolled && styles.avatarPending]}><Text style={[styles.avatarText, !item.isEnrolled && styles.avatarTextPending]}>{item.name.charAt(0).toUpperCase()}</Text></View>
-      <View style={styles.studentCopy}><Text style={styles.studentName}>{item.name}</Text><Text style={styles.studentRoll}>Roll no. {item.rollNumber}</Text></View>
-      {item.isEnrolled ? <View style={styles.readyBadge}><Ionicons name="checkmark" size={13} color={Colors.success} /><Text style={styles.readyText}>Ready</Text></View> : <TouchableOpacity id={`btn-enroll-${item.id}`} style={styles.enrollButton} onPress={() => router.push(`/student/${item.id}/enroll`)}><Text style={styles.enrollText}>Enroll</Text></TouchableOpacity>}
-      <TouchableOpacity id={`btn-delete-student-${item.id}`} style={styles.deleteButton} onPress={() => removeStudent(item)}><Ionicons name="ellipsis-horizontal" size={19} color={Colors.textMuted} /></TouchableOpacity>
+  const startEnrollQueue = () => {
+    if (pending[0]) router.push({ pathname: '/student/[id]/enroll', params: { id: String(pending[0].id), queue: '1' } });
+  };
+
+  const removeStudent = (s: StudentWithEmbeddings) => {
+    setSelected(null);
+    Alert.alert(`Remove ${s.name}?`, 'Their face data and attendance entries will be deleted.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: async () => { await deleteStudent(s.id); load(); } },
+    ]);
+  };
+
+  if (loading) return <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View>;
+
+  const header = (
+    <View>
+      <Text style={styles.title}>{cls?.name}</Text>
+      <Text style={styles.subtitle}>{[cls?.section, cls?.semester].filter(Boolean).join(' · ') || `${students.length} students`}</Text>
+
+      <View style={styles.stats}>
+        <Stat value={students.length} label="Students" />
+        <Stat value={enrolled.length} label="Face ready" />
+        <Stat value={today ? today.presentCount : '—'} label="Present today" accent={!!today} />
+      </View>
+
+      <Button
+        title={today ? 'Scan again' : 'Take attendance'}
+        icon="scan"
+        onPress={() => router.push(`/attendance/scan/${classId}`)}
+        disabled={!canScan}
+        style={{ marginTop: Spacing.lg }}
+      />
+      {today && (
+        <Tap style={styles.todayRow} onPress={() => router.push(`/attendance/review/${today.id}`)}>
+          <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
+          <Text style={styles.todayText}>Today’s attendance saved · {today.presentCount} present{today.uncertainCount ? ` · ${today.uncertainCount} to review` : ''}</Text>
+          <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+        </Tap>
+      )}
+      {!canScan && students.length > 0 && <Text style={styles.hint}>Set up at least one student’s face to start scanning.</Text>}
+
+      {pending.length > 0 && (
+        <Tap style={styles.setupCard} onPress={startEnrollQueue}>
+          <View style={styles.setupIcon}><Ionicons name="happy-outline" size={22} color="#000" /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.setupTitle}>{pending.length} student{pending.length > 1 ? 's' : ''} need face setup</Text>
+            <Text style={styles.setupSub}>
+              {pending.some(p => p.photoUri)
+                ? 'The face engine was upgraded for better accuracy — a quick re-capture is needed. Hands-free, ~10s each.'
+                : 'Hands-free, about 10 seconds each. We’ll go one after another.'}
+            </Text>
+          </View>
+          <Ionicons name="arrow-forward" size={20} color="#000" />
+        </Tap>
+      )}
+
+      <View style={{ marginTop: Spacing.xl, marginBottom: Spacing.md }}>
+        <Segmented<Tab>
+          value={tab}
+          onChange={setTab}
+          options={[{ value: 'students', label: 'Students', count: students.length }, { value: 'history', label: 'History', count: history.length }]}
+        />
+      </View>
     </View>
   );
 
-  if (loading) return <SafeAreaView style={styles.container}><View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View></SafeAreaView>;
-
   return (
-    <SafeAreaView style={styles.container}>
-      <FlatList
-        data={students}
-        keyExtractor={item => item.id.toString()}
-        renderItem={renderStudent}
-        contentContainerStyle={styles.list}
-        ListHeaderComponent={<>
-          <View style={styles.hero}>
-            <View style={styles.heroTop}><View style={styles.monogram}><Text style={styles.monogramText}>{cls?.name.slice(0, 2).toUpperCase()}</Text></View><View style={styles.heroCopy}><Text style={styles.heroTitle}>{cls?.name}</Text><Text style={styles.heroSubtitle}>{cls?.section}{cls?.semester ? ` · ${cls.semester}` : ''}</Text></View></View>
-            <View style={styles.heroMeta}><View style={styles.heroMetaItem}><Ionicons name="people-outline" size={15} color="#C9E6D0" /><Text style={styles.heroMetaText}>{students.length} students</Text></View><View style={styles.heroMetaDot} /><View style={styles.heroMetaItem}><Ionicons name="scan-outline" size={15} color="#C9E6D0" /><Text style={styles.heroMetaText}>{enrolledCount} ready</Text></View></View>
-          </View>
-
-          <Text style={styles.sectionLabel}>TODAY</Text>
-          {todaysAttendance ? (
-            <TouchableOpacity id="btn-view-todays-attendance" style={styles.attendanceCard} onPress={() => router.push(`/attendance/review/${todaysAttendance.id}`)} activeOpacity={0.82}>
-              <View style={styles.attendanceIcon}><Ionicons name="checkmark" size={20} color={Colors.success} /></View>
-              <View style={styles.attendanceCopy}><Text style={styles.attendanceEyebrow}>ATTENDANCE RECORDED</Text><Text style={styles.attendanceTitle}>{todaysAttendance.presentCount} present <Text style={styles.attendanceMuted}>of {enrolledCount} enrolled</Text></Text>{todaysAttendance.uncertainCount > 0 && <Text style={styles.attendanceReview}>{todaysAttendance.uncertainCount} match{todaysAttendance.uncertainCount > 1 ? 'es' : ''} need review</Text>}</View>
-              <Ionicons name="chevron-forward" size={20} color={Colors.primary} />
-            </TouchableOpacity>
-          ) : (
-            <View style={styles.emptyAttendance}><View style={styles.attendanceIcon}><Ionicons name="calendar-outline" size={20} color={Colors.primary} /></View><View><Text style={styles.attendanceTitle}>Not marked yet</Text><Text style={styles.emptyAttendanceText}>Start when your class is ready.</Text></View></View>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
+      {tab === 'students' ? (
+        <FlatList
+          data={students}
+          keyExtractor={s => String(s.id)}
+          contentContainerStyle={styles.list}
+          ListHeaderComponent={header}
+          renderItem={({ item }) => (
+            <Tap style={styles.row} scaleTo={0.985} onPress={() => (item.isEnrolled ? setSelected(item) : router.push(`/student/${item.id}/enroll`))}>
+              <Avatar name={item.name} uri={item.photoUri} seed={item.id} size={46} />
+              <View style={styles.rowText}>
+                <Text style={styles.rowTitle} numberOfLines={1}>{item.name}</Text>
+                <Text style={styles.rowSub}>Roll {item.rollNumber}</Text>
+              </View>
+              {item.isEnrolled ? <Badge tone="success" icon="checkmark" label="Ready" /> : <Badge tone="warning" label="Set up face" />}
+            </Tap>
           )}
+          ListEmptyComponent={
+            <EmptyState icon="people-outline" title="No students yet" body="Add students one by one or paste your roster.">
+              <Button title="Add students" icon="person-add-outline" onPress={() => router.push({ pathname: '/student/add', params: { classId: String(classId) } })} style={{ alignSelf: 'stretch' }} />
+            </EmptyState>
+          }
+        />
+      ) : (
+        <FlatList
+          data={history}
+          keyExtractor={h => String(h.id)}
+          contentContainerStyle={styles.list}
+          ListHeaderComponent={header}
+          renderItem={({ item }) => {
+            const total = item.presentCount + item.absentCount + item.uncertainCount;
+            return (
+              <Tap style={styles.historyRow} scaleTo={0.985} onPress={() => router.push(`/attendance/review/${item.id}`)}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowTitle}>{new Date(`${item.date}T00:00:00`).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</Text>
+                  <Text style={styles.rowSub}>{item.presentCount} present · {item.absentCount} absent{item.uncertainCount ? ` · ${item.uncertainCount} review` : ''}</Text>
+                  <View style={{ marginTop: 10 }}><ProgressBar value={total ? item.presentCount / total : 0} /></View>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} style={{ marginLeft: 12 }} />
+              </Tap>
+            );
+          }}
+          ListEmptyComponent={<EmptyState icon="calendar-outline" title="No attendance yet" body="Your scans will show up here." />}
+        />
+      )}
 
-          <TouchableOpacity id="btn-scan-attendance" style={[styles.scanButton, !canScan && styles.scanButtonDisabled]} onPress={() => canScan && router.push(`/attendance/scan/${classId}`)} disabled={!canScan} activeOpacity={0.85}>
-            <Ionicons name="scan-outline" size={21} color={Colors.textOnPrimary} /><Text style={styles.scanText}>{todaysAttendance ? 'Take another scan' : 'Start attendance scan'}</Text>
-          </TouchableOpacity>
-          {!canScan && <Text style={styles.disabledHint}>Enroll at least one student before scanning.</Text>}
-          <TouchableOpacity id="btn-add-student" style={styles.addStudentButton} onPress={() => router.push({ pathname: '/student/add', params: { classId: classId.toString() } })}><Ionicons name="person-add-outline" size={18} color={Colors.primary} /><Text style={styles.addStudentText}>Add student</Text></TouchableOpacity>
-
-          <View style={styles.studentsHeading}><Text style={styles.sectionLabel}>STUDENTS</Text><Text style={styles.studentCount}>{students.length}</Text></View>
-        </>}
-        ListEmptyComponent={<View style={styles.emptyStudents}><Ionicons name="people-outline" size={28} color={Colors.primary} /><Text style={styles.emptyStudentsTitle}>No students added</Text><Text style={styles.emptyStudentsText}>Add students to begin enrollment.</Text></View>}
-        ListFooterComponent={<View style={styles.footer}>
-          {previousSessions.length > 0 && <View style={styles.history}><Text style={styles.sectionLabel}>PREVIOUS ATTENDANCE</Text>{previousSessions.map(session => <TouchableOpacity key={session.id} style={styles.historyRow} onPress={() => router.push(`/attendance/review/${session.id}`)}><View><Text style={styles.historyDate}>{new Date(`${session.date}T00:00:00`).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</Text><Text style={styles.historyStats}>{session.presentCount} present · {session.absentCount} absent</Text></View><Ionicons name="chevron-forward" size={18} color={Colors.textMuted} /></TouchableOpacity>)}</View>}
-          <TouchableOpacity id="btn-delete-class" style={styles.deleteClassButton} onPress={removeClass}><Text style={styles.deleteClassText}>Delete class</Text></TouchableOpacity>
-        </View>}
-      />
+      <Sheet visible={!!selected} onClose={() => setSelected(null)}>
+        {selected && (
+          <View>
+            <View style={styles.sheetHead}>
+              <Avatar name={selected.name} uri={selected.photoUri} seed={selected.id} size={64} />
+              <View style={{ marginLeft: 14, flex: 1 }}>
+                <Text style={styles.sheetName}>{selected.name}</Text>
+                <Text style={styles.rowSub}>Roll {selected.rollNumber}{selected.studentId ? ` · ${selected.studentId}` : ''}</Text>
+              </View>
+            </View>
+            <Button title="Redo face setup" icon="refresh" variant="secondary" onPress={() => { const s = selected; setSelected(null); router.push(`/student/${s.id}/enroll`); }} />
+            <Button title="Remove student" icon="trash-outline" variant="ghost" onPress={() => removeStudent(selected)} style={{ marginTop: 6 }} />
+          </View>
+        )}
+      </Sheet>
     </SafeAreaView>
   );
 }
 
+function Stat({ value, label, accent }: { value: number | string; label: string; accent?: boolean }) {
+  return (
+    <View style={styles.stat}>
+      <Text style={[styles.statValue, accent && { color: Colors.success }]}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.bg }, center: { flex: 1, alignItems: 'center', justifyContent: 'center' }, list: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
-  hero: { backgroundColor: '#173C27', borderRadius: Radius.xl, padding: Spacing.md, marginBottom: Spacing.xl }, heroTop: { flexDirection: 'row', alignItems: 'center' }, monogram: { width: 52, height: 52, borderRadius: 16, backgroundColor: '#E5F5D7', justifyContent: 'center', alignItems: 'center' }, monogramText: { ...Typography.heading3, color: Colors.primaryDark }, heroCopy: { flex: 1, marginLeft: 12 }, heroTitle: { ...Typography.heading3, color: '#FFFFFF' }, heroSubtitle: { ...Typography.bodySmall, color: '#C9E6D0', marginTop: 3 }, heroMeta: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.14)' }, heroMetaItem: { flexDirection: 'row', alignItems: 'center', gap: 6 }, heroMetaText: { ...Typography.caption, color: '#C9E6D0', fontWeight: '700' }, heroMetaDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#83B894', marginHorizontal: 10 },
-  sectionLabel: { ...Typography.label, color: Colors.textMuted, marginBottom: Spacing.sm }, attendanceCard: { backgroundColor: Colors.successBg, borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1, borderColor: Colors.success + '45', flexDirection: 'row', alignItems: 'center' }, emptyAttendance: { backgroundColor: Colors.bgCard, borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1, borderColor: Colors.border, flexDirection: 'row', alignItems: 'center' }, attendanceIcon: { width: 42, height: 42, borderRadius: Radius.full, backgroundColor: Colors.bgCard, alignItems: 'center', justifyContent: 'center', marginRight: 12 }, attendanceCopy: { flex: 1 }, attendanceEyebrow: { ...Typography.label, color: Colors.success, marginBottom: 3 }, attendanceTitle: { ...Typography.body, color: Colors.textPrimary, fontWeight: '800' }, attendanceMuted: { color: Colors.textSecondary, fontWeight: '400' }, attendanceReview: { ...Typography.caption, color: Colors.warning, fontWeight: '700', marginTop: 3 }, emptyAttendanceText: { ...Typography.caption, color: Colors.textSecondary, marginTop: 3 },
-  scanButton: { backgroundColor: Colors.primary, minHeight: 54, marginTop: Spacing.sm, borderRadius: Radius.lg, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8, shadowColor: Colors.primaryDark, shadowOpacity: 0.18, shadowOffset: { width: 0, height: 6 }, shadowRadius: 10, elevation: 4 }, scanButtonDisabled: { opacity: 0.42, shadowOpacity: 0 }, scanText: { ...Typography.heading3, color: Colors.textOnPrimary }, disabledHint: { ...Typography.caption, color: Colors.textMuted, textAlign: 'center', marginTop: 7 }, addStudentButton: { minHeight: 46, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.primary + '55', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 7, marginTop: Spacing.sm }, addStudentText: { ...Typography.bodySmall, color: Colors.primary, fontWeight: '800' },
-  studentsHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.xl }, studentCount: { ...Typography.caption, color: Colors.primary, fontWeight: '800', backgroundColor: Colors.primaryLight, paddingHorizontal: 8, paddingVertical: 3, borderRadius: Radius.full, marginBottom: Spacing.sm }, studentRow: { backgroundColor: Colors.bgCard, minHeight: 66, borderRadius: Radius.md, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.xs, borderWidth: 1, borderColor: Colors.border }, avatar: { width: 38, height: 38, borderRadius: Radius.full, backgroundColor: Colors.primaryLight, alignItems: 'center', justifyContent: 'center' }, avatarPending: { backgroundColor: '#FFF1CF' }, avatarText: { ...Typography.bodySmall, color: Colors.primaryDark, fontWeight: '800' }, avatarTextPending: { color: Colors.accentDark }, studentCopy: { flex: 1, marginLeft: 10 }, studentName: { ...Typography.bodySmall, color: Colors.textPrimary, fontWeight: '800' }, studentRoll: { ...Typography.caption, color: Colors.textMuted, marginTop: 2 }, readyBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: Colors.successBg, borderRadius: Radius.full, paddingHorizontal: 7, paddingVertical: 4 }, readyText: { ...Typography.caption, color: Colors.success, fontWeight: '800' }, enrollButton: { backgroundColor: Colors.primaryLight, borderRadius: Radius.full, paddingHorizontal: 10, paddingVertical: 6 }, enrollText: { ...Typography.caption, color: Colors.primaryDark, fontWeight: '800' }, deleteButton: { padding: 8, marginLeft: 2 },
-  emptyStudents: { backgroundColor: Colors.bgCard, borderRadius: Radius.lg, padding: Spacing.xl, alignItems: 'center', borderWidth: 1, borderColor: Colors.border }, emptyStudentsTitle: { ...Typography.body, color: Colors.textPrimary, fontWeight: '800', marginTop: Spacing.sm }, emptyStudentsText: { ...Typography.bodySmall, color: Colors.textSecondary, marginTop: 3 }, footer: { paddingTop: Spacing.xl }, history: { marginBottom: Spacing.lg }, historyRow: { backgroundColor: Colors.bgCard, borderRadius: Radius.md, padding: Spacing.md, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: Colors.border, marginBottom: Spacing.xs }, historyDate: { ...Typography.bodySmall, color: Colors.textPrimary, fontWeight: '800' }, historyStats: { ...Typography.caption, color: Colors.textSecondary, marginTop: 3 }, deleteClassButton: { alignItems: 'center', paddingVertical: Spacing.md, marginTop: Spacing.lg }, deleteClassText: { ...Typography.bodySmall, color: Colors.danger, fontWeight: '700' },
+  container: { flex: 1, backgroundColor: Colors.bg },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.bg },
+  list: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.xxl },
+  title: { ...Typography.heading1, color: Colors.textPrimary },
+  subtitle: { ...Typography.body, color: Colors.textSecondary, marginTop: 2 },
+  stats: { flexDirection: 'row', gap: 10, marginTop: Spacing.lg },
+  stat: { flex: 1, backgroundColor: Colors.bgElevated, borderRadius: Radius.md, paddingVertical: 14, paddingHorizontal: 12 },
+  statValue: { fontSize: 24, fontWeight: '800', color: Colors.textPrimary, letterSpacing: -0.6 },
+  statLabel: { ...Typography.caption, color: Colors.textSecondary, marginTop: 2 },
+  hint: { ...Typography.caption, color: Colors.textMuted, textAlign: 'center', marginTop: 8 },
+  todayRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 14, paddingHorizontal: 4 },
+  todayText: { ...Typography.bodySmall, color: Colors.textPrimary, fontWeight: '600', flex: 1 },
+  setupCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#FFF4E0', borderRadius: Radius.lg, padding: Spacing.md, marginTop: Spacing.md },
+  setupIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.uncertain, alignItems: 'center', justifyContent: 'center' },
+  setupTitle: { ...Typography.bodyStrong, color: Colors.textPrimary },
+  setupSub: { ...Typography.caption, color: Colors.textSecondary, marginTop: 2 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
+  rowText: { flex: 1, marginLeft: 14, marginRight: 8 },
+  rowTitle: { ...Typography.bodyStrong, color: Colors.textPrimary },
+  rowSub: { ...Typography.caption, color: Colors.textSecondary, marginTop: 2 },
+  historyRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.bgElevated, borderRadius: Radius.md, padding: Spacing.md, marginBottom: 10 },
+  sheetHead: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.lg },
+  sheetName: { ...Typography.heading2, color: Colors.textPrimary },
 });

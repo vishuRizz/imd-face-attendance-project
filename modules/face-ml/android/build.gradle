@@ -33,7 +33,7 @@ repositories {
 
 dependencies {
     // ONNX Runtime for face detection + recognition
-    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.18.0'
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.29.0'
     implementation 'androidx.exifinterface:exifinterface:1.3.7'
 
     // expo-modules-core is provided by the host app — compile-only

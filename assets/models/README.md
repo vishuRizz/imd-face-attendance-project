@@ -17,17 +17,32 @@ curl -L -o scrfd_10g_kps.onnx "https://github.com/yakhyo/adaface-onnx/releases/d
 curl -L -o adaface_ir101.onnx "https://github.com/yakhyo/adaface-onnx/releases/download/weights/adaface_ir_101.onnx"
 ```
 
+## Prepare (required once after download)
+
+```bash
+pip install onnx
+npm run prepare-models
+```
+
+This exposes AdaFace's feature norm as a second `norm` output and makes SCRFD's
+output shapes dynamic (so it can run at aspect-correct / faster input sizes
+without log spam). The app works with unpatched models too, just without the
+quality signal.
+
 ## Input Specifications
 
 ### SCRFD-10G Detector
-- Input: shape `[1, 3, 640, 640]`
+- Input: shape `[1, 3, H, W]` — any multiple of 32. The app feeds aspect-correct
+  inputs (long side 640 for photos/tiles, 512 for live, 480 for enrollment), zero-padded
 - Normalization: `(pixel - 127.5) / 128.0`
 - Outputs: 9 tensors (scores, boxes, keypoints at strides 8/16/32)
 
 ### AdaFace IR-101 Recognizer
-- Input: shape `[1, 3, 112, 112]` (112×112 aligned face crop)
+- Input: shape `[N, 3, 112, 112]` (112×112 aligned face crop), **BGR channel order**
+  (as in the official AdaFace `to_input` and yakhyo/adaface-onnx)
 - Normalization: `(pixel - 127.5) / 127.5` ← different from ArcFace (128.0)!
-- Output: `[1, 512]` L2-normalized embedding
+- Output: `[N, 512]` L2-normalized embedding (+ `norm` `[N, 1]` after prepare-models)
+- Anchor centres for SCRFD decoding are `grid * stride` (no +0.5 offset)
 - Trained on: MS1MV2 (5.8M images, 85K identities)
 
 ## Why AdaFace IR-101?

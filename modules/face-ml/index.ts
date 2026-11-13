@@ -80,3 +80,93 @@ export async function validateEnrollmentPhoto(imageUri: string): Promise<{
 export async function isReady(): Promise<boolean> {
   return FaceMLModule.isReady();
 }
+
+// ─── Fast analysis APIs (live scan, group photos, auto-enrollment) ───────────
+
+export type AnalyzedFaceStatus = 'embedded' | 'skipped' | 'small' | 'deferred' | 'blurry' | 'pose';
+
+export interface AnalyzedFace {
+  box: FaceBox;
+  landmarks: Landmark[];
+  status: AnalyzedFaceStatus;
+  /** Head yaw in eye-distance units (0 = frontal). */
+  yaw: number;
+  embedding?: number[];
+  /** AdaFace feature norm — higher means a cleaner, more identifiable face (-1 if unavailable). */
+  quality?: number;
+  sharpness?: number;
+  thumbUri?: string;
+}
+
+export interface AnalyzeResult {
+  faces: AnalyzedFace[];
+  imageWidth: number;
+  imageHeight: number;
+  timings: { decodeMs: number; detectMs: number; embedMs: number; totalMs: number };
+}
+
+export interface AnalyzeOptions {
+  maxDim?: number;
+  detSize?: number;
+  tiled?: boolean;
+  detThreshold?: number;
+  maxFaces?: number;
+  minFaceSize?: number;
+  /** Normalised [x, y, w, h] boxes to skip embedding for. */
+  skipBoxes?: number[][];
+  skipIou?: number;
+  blurThreshold?: number;
+  maxYaw?: number;
+  flip?: boolean;
+  thumbs?: boolean;
+  deleteInput?: boolean;
+}
+
+export async function analyzeImage(imageUri: string, options: AnalyzeOptions = {}): Promise<AnalyzeResult> {
+  return FaceMLModule.analyzeImage(imageUri, options);
+}
+
+export type EnrollReason = 'ok' | 'no_face' | 'multiple' | 'too_small' | 'blurry';
+
+export interface EnrollAnalysis {
+  reason: EnrollReason;
+  faceCount: number;
+  imageWidth: number;
+  imageHeight: number;
+  box?: FaceBox;
+  landmarks?: Landmark[];
+  yaw?: number;
+  embedding?: number[];
+  quality?: number;
+  sharpness?: number;
+  thumbUri?: string;
+}
+
+export interface EnrollOptions {
+  maxDim?: number;
+  minFaceSize?: number;
+  blurThreshold?: number;
+  flip?: boolean;
+  deleteInput?: boolean;
+}
+
+export async function analyzeEnrollment(imageUri: string, options: EnrollOptions = {}): Promise<EnrollAnalysis> {
+  return FaceMLModule.analyzeEnrollment(imageUri, options);
+}
+
+export interface EngineInfo {
+  backend: 'cpu' | 'xnnpack' | 'nnapi' | 'none';
+  threads?: number;
+  qualityAvailable?: boolean;
+  recognizerMs?: number;
+  benchmarks?: Record<string, number>;
+}
+
+export async function getEngineInfo(): Promise<EngineInfo> {
+  return FaceMLModule.getEngineInfo();
+}
+
+/** Pick the fastest verified inference backend for this phone (persisted; runs once). */
+export async function tuneBackend(force = false): Promise<EngineInfo> {
+  return FaceMLModule.tuneBackend(force);
+}

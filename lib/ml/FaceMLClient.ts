@@ -6,10 +6,22 @@ import {
   initModels,
   detectAndEmbedFaces,
   validateEnrollmentPhoto,
+  analyzeImage,
+  analyzeEnrollment,
+  getEngineInfo,
+  tuneBackend,
   isReady,
   type DetectionResult,
+  type AnalyzeResult,
+  type EnrollAnalysis,
+  type EngineInfo,
 } from '../../modules/face-ml/index';
-import { buildEnrolledTemplates, matchGroupFaces, type MatchResult } from './matcher';
+import {
+  buildEnrolledTemplates,
+  matchGroupFaces,
+  type MatchResult,
+  type EnrolledStudentTemplates,
+} from './matcher';
 
 import detectorAssetModule   from '../../assets/models/scrfd_10g_kps.onnx';
 import recognizerAssetModule from '../../assets/models/adaface_ir101.onnx';
@@ -207,3 +219,83 @@ export async function processGroupPhoto(
     imageHeight: detection.imageHeight,
   };
 }
+
+// ─── Fast pipeline (live scan / group photo / auto-enroll) ───────────────────
+
+export interface Gallery {
+  templates: EnrolledStudentTemplates[];
+  /** Median AdaFace quality of enrollment captures (-1 if unknown). */
+  qualityRef: number;
+}
+
+export function buildGallery(
+  rows: Array<{ studentId: number; embedding: number[]; quality?: number; source?: string }>
+): Gallery {
+  const valid = rows.filter(r => Array.isArray(r.embedding) && r.embedding.length === 512);
+  const q = valid
+    .filter(r => r.source !== 'field' && typeof r.quality === 'number' && r.quality > 0)
+    .map(r => r.quality as number)
+    .sort((a, b) => a - b);
+  return {
+    templates: buildEnrolledTemplates(valid),
+    qualityRef: q.length ? q[Math.floor(q.length / 2)] : -1,
+  };
+}
+
+/**
+ * Live frame preset — tuned for throughput while the teacher sweeps the room:
+ * aspect-correct 512px detector input, no flip, side-on and blurry faces are
+ * skipped before the expensive recognizer runs (they'll be caught in a later frame).
+ */
+export async function analyzeLiveFrame(uri: string, skipBoxes: number[][]): Promise<AnalyzeResult> {
+  return analyzeImage(uri, {
+    maxDim: 1440,
+    detSize: 512,
+    detThreshold: 0.5,
+    maxFaces: 8,
+    minFaceSize: 36,
+    skipBoxes,
+    skipIou: 0.4,
+    maxYaw: 0.55,
+    blurThreshold: 18,
+    flip: false,
+    thumbs: true,
+    deleteInput: true,
+  });
+}
+
+/**
+ * Group photo preset — maximum accuracy: near-full-resolution decode, tiled
+ * detection (2×2 or 3×3) for back rows, a slightly lower detection threshold,
+ * and flip-fused embeddings.
+ */
+export async function analyzeGroupPhotoRaw(uri: string): Promise<AnalyzeResult> {
+  await initMLModels();
+  return analyzeImage(uri, {
+    maxDim: 4000,
+    detSize: 640,
+    tiled: true,
+    detThreshold: 0.45,
+    maxFaces: 150,
+    minFaceSize: 20,
+    flip: true,
+    thumbs: true,
+  });
+}
+
+export async function analyzeEnrollmentCapture(uri: string): Promise<EnrollAnalysis> {
+  return analyzeEnrollment(uri, { maxDim: 1280, minFaceSize: 80, blurThreshold: 40, flip: true, deleteInput: true });
+}
+
+/** Initialise models, then pick the fastest verified backend once per device. */
+export async function warmUpEngine(): Promise<EngineInfo | null> {
+  try {
+    await initMLModels();
+    return await tuneBackend(false);
+  } catch {
+    return null;
+  }
+}
+
+export { getEngineInfo };
+export type { EngineInfo };

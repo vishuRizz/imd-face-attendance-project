@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "facescanattendance",
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
@@ -64,7 +64,8 @@
         }
       ],
       "./plugins/withOnnxNoCompress.js",
-      "./plugins/withAndroidSdk.js"
+      "./plugins/withAndroidSdk.js",
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true,

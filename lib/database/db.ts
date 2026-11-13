@@ -17,6 +17,15 @@ export type { ClassWithStats, StudentWithEmbeddings, AttendanceWithRecords } fro
 
 let db: SQLite.SQLiteDatabase | null = null;
 
+/**
+ * Version of the face pipeline that produced stored embeddings. Bump whenever
+ * preprocessing or the model changes in a way that makes old embeddings
+ * incomparable. v2 = BGR input + flip-fused AdaFace embeddings.
+ */
+export const PIPELINE_VERSION = 2;
+/** Max classroom ("field") templates kept per student, on top of enrollment captures. */
+const FIELD_TEMPLATE_CAP = 6;
+
 export async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (db) return db;
   db = await SQLite.openDatabaseAsync('facescan_attendance.db');
@@ -95,6 +104,30 @@ async function initializeDatabase(database: SQLite.SQLiteDatabase) {
     value TEXT NOT NULL
   )`);
 
+  // Migrations (additive only)
+  const studentCols = await database.getAllAsync<{ name: string }>('PRAGMA table_info(students)');
+  if (!studentCols.some(c => c.name === 'photo_uri')) {
+    await database.runAsync('ALTER TABLE students ADD COLUMN photo_uri TEXT');
+  }
+
+  const embCols = await database.getAllAsync<{ name: string }>('PRAGMA table_info(face_embeddings)');
+  if (!embCols.some(c => c.name === 'pipeline')) {
+    await database.runAsync('ALTER TABLE face_embeddings ADD COLUMN pipeline INTEGER NOT NULL DEFAULT 1');
+    await database.runAsync('ALTER TABLE face_embeddings ADD COLUMN quality REAL');
+    await database.runAsync("ALTER TABLE face_embeddings ADD COLUMN source TEXT NOT NULL DEFAULT 'enroll'");
+    // Embeddings from the old pipeline are not comparable with the new one:
+    // send those students back through (hands-free) face setup.
+    await database.runAsync(
+      `UPDATE students SET is_enrolled = 0 WHERE id IN (SELECT DISTINCT student_id FROM face_embeddings WHERE pipeline < ${PIPELINE_VERSION})`);
+    await database.runAsync(`DELETE FROM face_embeddings WHERE pipeline < ${PIPELINE_VERSION}`);
+  }
+  const recCols = await database.getAllAsync<{ name: string }>('PRAGMA table_info(attendance_records)');
+  if (!recCols.some(c => c.name === 'embedding')) {
+    await database.runAsync('ALTER TABLE attendance_records ADD COLUMN embedding TEXT');
+    await database.runAsync('ALTER TABLE attendance_records ADD COLUMN quality REAL');
+    await database.runAsync('ALTER TABLE attendance_records ADD COLUMN manual INTEGER NOT NULL DEFAULT 0');
+  }
+
   await database.runAsync('CREATE INDEX IF NOT EXISTS idx_students_class ON students(class_id)');
   await database.runAsync('CREATE INDEX IF NOT EXISTS idx_embeddings_student ON face_embeddings(student_id)');
   await database.runAsync('CREATE INDEX IF NOT EXISTS idx_attendance_class ON attendance(class_id)');
@@ -126,26 +159,49 @@ export async function getClassById(id: number): Promise<Class> {
   return mapClass(row);
 }
 
+export const localDateKey = (d = new Date()) => {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
 export async function getAllClasses(): Promise<ClassWithStats[]> {
   const database = await getDb();
+  const today = localDateKey();
   const rows = await database.getAllAsync<any>(`
     SELECT
       c.id, c.name, c.section, c.semester, c.created_at,
-      COUNT(DISTINCT s.id) AS student_count,
-      SUM(CASE WHEN s.is_enrolled = 1 THEN 1 ELSE 0 END) AS enrolled_count,
-      MAX(a.date) AS last_attendance
+      (SELECT COUNT(*) FROM students s WHERE s.class_id = c.id) AS student_count,
+      (SELECT COUNT(*) FROM students s WHERE s.class_id = c.id AND s.is_enrolled = 1) AS enrolled_count,
+      (SELECT MAX(a.date) FROM attendance a WHERE a.class_id = c.id) AS last_attendance,
+      (SELECT a.id FROM attendance a WHERE a.class_id = c.id AND a.date = ? ORDER BY a.id DESC LIMIT 1) AS today_session_id
     FROM classes c
-    LEFT JOIN students s ON s.class_id = c.id
-    LEFT JOIN attendance a ON a.class_id = c.id
-    GROUP BY c.id
-    ORDER BY c.created_at DESC
-  `);
-  return rows.map(mapClassWithStats);
+    ORDER BY c.created_at DESC, c.id DESC
+  `, [today]);
+  const classes = rows.map(mapClassWithStats);
+  for (const cls of classes) {
+    if (cls.todaySessionId) {
+      const row = await database.getFirstAsync<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM attendance_records WHERE attendance_id = ? AND status = 'present'`,
+        [cls.todaySessionId]
+      );
+      cls.todayPresent = row?.n ?? 0;
+    }
+  }
+  return classes;
 }
 
 export async function deleteClass(id: number): Promise<void> {
   const database = await getDb();
-  await database.runAsync(`DELETE FROM classes WHERE id = ?`, [id]);
+  // No FK cascades in the schema — remove dependents explicitly.
+  await database.withTransactionAsync(async () => {
+    await database.runAsync(
+      `DELETE FROM attendance_records WHERE attendance_id IN (SELECT id FROM attendance WHERE class_id = ?)`, [id]);
+    await database.runAsync(`DELETE FROM attendance WHERE class_id = ?`, [id]);
+    await database.runAsync(
+      `DELETE FROM face_embeddings WHERE student_id IN (SELECT id FROM students WHERE class_id = ?)`, [id]);
+    await database.runAsync(`DELETE FROM students WHERE class_id = ?`, [id]);
+    await database.runAsync(`DELETE FROM classes WHERE id = ?`, [id]);
+  });
 }
 
 // ─── Students ────────────────────────────────────────────────────────────────
@@ -189,9 +245,54 @@ export async function getStudentsForClass(classId: number): Promise<StudentWithE
   return rows.map(mapStudentWithEmbeddings);
 }
 
+export async function createStudentsBulk(
+  classId: number,
+  rows: Array<{ name: string; rollNumber: string }>
+): Promise<{ created: number; skipped: string[] }> {
+  const database = await getDb();
+  let created = 0;
+  const skipped: string[] = [];
+  await database.withTransactionAsync(async () => {
+    for (const row of rows) {
+      const exists = await database.getFirstAsync<{ id: number }>(
+        `SELECT id FROM students WHERE class_id = ? AND roll_number = ?`, [classId, row.rollNumber]);
+      if (exists) { skipped.push(row.rollNumber); continue; }
+      await database.runAsync(
+        `INSERT INTO students (class_id, name, roll_number) VALUES (?, ?, ?)`,
+        [classId, row.name, row.rollNumber]);
+      created++;
+    }
+  });
+  return { created, skipped };
+}
+
 export async function deleteStudent(id: number): Promise<void> {
   const database = await getDb();
-  await database.runAsync(`DELETE FROM students WHERE id = ?`, [id]);
+  await database.withTransactionAsync(async () => {
+    await database.runAsync(`DELETE FROM face_embeddings WHERE student_id = ?`, [id]);
+    await database.runAsync(`DELETE FROM attendance_records WHERE student_id = ?`, [id]);
+    await database.runAsync(`DELETE FROM students WHERE id = ?`, [id]);
+  });
+}
+
+/** Atomically replace a student's face templates and mark them enrolled. */
+export async function saveEnrollment(
+  studentId: number,
+  captures: Array<{ embedding: number[]; quality?: number }>,
+  photoUri?: string
+): Promise<void> {
+  const database = await getDb();
+  await database.withTransactionAsync(async () => {
+    await database.runAsync(`DELETE FROM face_embeddings WHERE student_id = ?`, [studentId]);
+    for (let i = 0; i < captures.length; i++) {
+      await database.runAsync(
+        `INSERT INTO face_embeddings (student_id, embedding, capture_index, pipeline, quality, source) VALUES (?, ?, ?, ?, ?, 'enroll')`,
+        [studentId, JSON.stringify(captures[i].embedding), i, PIPELINE_VERSION, captures[i].quality ?? null]);
+    }
+    await database.runAsync(
+      `UPDATE students SET is_enrolled = 1, enrolled_at = datetime('now'), photo_uri = COALESCE(?, photo_uri) WHERE id = ?`,
+      [photoUri ?? null, studentId]);
+  });
 }
 
 export async function markStudentEnrolled(studentId: number): Promise<void> {
@@ -231,20 +332,60 @@ export async function getEmbeddingsForStudent(studentId: number): Promise<FaceEm
   return rows.map(mapEmbedding);
 }
 
-export async function getAllEmbeddingsForClass(classId: number): Promise<
-  Array<{ studentId: number; embedding: number[] }>
-> {
+export type StoredTemplate = {
+  studentId: number;
+  embedding: number[];
+  quality?: number;
+  source: 'enroll' | 'field';
+};
+
+export async function getAllEmbeddingsForClass(classId: number): Promise<StoredTemplate[]> {
   const database = await getDb();
   const rows = await database.getAllAsync<any>(`
-    SELECT fe.student_id, fe.embedding
+    SELECT fe.student_id, fe.embedding, fe.quality, fe.source
     FROM face_embeddings fe
     JOIN students s ON s.id = fe.student_id
-    WHERE s.class_id = ? AND s.is_enrolled = 1
-  `, [classId]);
+    WHERE s.class_id = ? AND s.is_enrolled = 1 AND fe.pipeline = ?
+  `, [classId, PIPELINE_VERSION]);
   return rows.map((r: any) => ({
     studentId: r.student_id,
     embedding: JSON.parse(r.embedding) as number[],
+    quality: r.quality ?? undefined,
+    source: r.source === 'field' ? 'field' : 'enroll',
   }));
+}
+
+/**
+ * Adaptive learning: store teacher-confirmed classroom faces as extra
+ * templates so recognition adapts to real classroom distance, angle and
+ * lighting. Keeps the newest FIELD_TEMPLATE_CAP per student.
+ */
+export async function addFieldTemplates(
+  items: Array<{ studentId: number; embedding: number[]; quality?: number }>
+): Promise<number> {
+  if (!items.length) return 0;
+  const database = await getDb();
+  await database.withTransactionAsync(async () => {
+    for (const it of items) {
+      await database.runAsync(
+        `INSERT INTO face_embeddings (student_id, embedding, capture_index, pipeline, quality, source) VALUES (?, ?, 100, ?, ?, 'field')`,
+        [it.studentId, JSON.stringify(it.embedding), PIPELINE_VERSION, it.quality ?? null]);
+      await database.runAsync(
+        `DELETE FROM face_embeddings WHERE id IN (
+           SELECT id FROM face_embeddings WHERE student_id = ? AND source = 'field'
+           ORDER BY id DESC LIMIT -1 OFFSET ?)`,
+        [it.studentId, FIELD_TEMPLATE_CAP]);
+    }
+  });
+  return items.length;
+}
+
+/** Embeddings captured in a session, keyed by record id (for adaptive learning on save). */
+export async function getSessionEmbeddings(sessionId: number): Promise<Map<number, { embedding: number[]; quality?: number }>> {
+  const database = await getDb();
+  const rows = await database.getAllAsync<any>(
+    `SELECT id, embedding, quality FROM attendance_records WHERE attendance_id = ? AND embedding IS NOT NULL`, [sessionId]);
+  return new Map(rows.map((r: any) => [r.id, { embedding: JSON.parse(r.embedding), quality: r.quality ?? undefined }]));
 }
 
 export async function deleteEmbeddingsForStudent(studentId: number): Promise<void> {
@@ -279,6 +420,9 @@ export async function saveAttendanceRecords(
     confidence?: number;
     faceBox?: object;
     faceImageUri?: string;
+    embedding?: number[];
+    quality?: number;
+    manual?: boolean;
   }>
 ): Promise<void> {
   const database = await getDb();
@@ -308,8 +452,8 @@ export async function saveAttendanceRecords(
 
       await database.runAsync(
         `INSERT INTO attendance_records
-          (attendance_id, student_id, status, confidence, face_box, face_image_uri)
-          VALUES (?, ?, ?, ?, ?, ?)`,
+          (attendance_id, student_id, status, confidence, face_box, face_image_uri, embedding, quality, manual)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           attendanceId,
           resolvedStudentId,
@@ -317,9 +461,72 @@ export async function saveAttendanceRecords(
           r.confidence ?? null,
           r.faceBox ? JSON.stringify(r.faceBox) : null,
           r.faceImageUri ?? null,
+          r.embedding ? JSON.stringify(r.embedding) : null,
+          r.quality ?? null,
+          r.manual ? 1 : 0,
         ]
       );
     }
+  });
+}
+
+export interface SessionRecord extends AttendanceRecord {
+  studentName?: string;
+  rollNumber?: string;
+  studentPhotoUri?: string;
+}
+
+export async function getAttendanceSession(sessionId: number): Promise<{
+  session: Attendance;
+  records: SessionRecord[];
+}> {
+  const database = await getDb();
+  const row = await database.getFirstAsync<any>(`SELECT * FROM attendance WHERE id = ?`, [sessionId]);
+  if (!row) throw new Error('Attendance session not found');
+  const rows = await database.getAllAsync<any>(`
+    SELECT ar.id, ar.attendance_id, ar.student_id, ar.status, ar.confidence, ar.face_box, ar.face_image_uri, ar.quality, ar.manual, ar.created_at, s.name AS student_name, s.roll_number AS roll_number, s.photo_uri AS student_photo_uri
+    FROM attendance_records ar
+    LEFT JOIN students s ON s.id = ar.student_id
+    WHERE ar.attendance_id = ?
+    ORDER BY s.roll_number ASC, ar.id ASC
+  `, [sessionId]);
+  return {
+    session: mapAttendance(row),
+    records: rows.map((r: any) => ({
+      ...mapRecord(r),
+      studentName: r.student_name ?? undefined,
+      rollNumber: r.roll_number ?? undefined,
+      studentPhotoUri: r.student_photo_uri ?? undefined,
+    })),
+  };
+}
+
+export async function updateAttendanceRecords(
+  records: Array<{ id: number; studentId?: number | null; status: AttendanceStatus }>
+): Promise<void> {
+  const database = await getDb();
+  await database.withTransactionAsync(async () => {
+    for (const r of records) {
+      await database.runAsync(
+        `UPDATE attendance_records SET student_id = ?, status = ? WHERE id = ?`,
+        [r.studentId ?? null, r.status, r.id]);
+    }
+  });
+}
+
+export async function deleteAttendanceRecords(ids: number[]): Promise<void> {
+  if (!ids.length) return;
+  const database = await getDb();
+  await database.withTransactionAsync(async () => {
+    for (const id of ids) await database.runAsync(`DELETE FROM attendance_records WHERE id = ?`, [id]);
+  });
+}
+
+export async function deleteAttendanceSession(sessionId: number): Promise<void> {
+  const database = await getDb();
+  await database.withTransactionAsync(async () => {
+    await database.runAsync(`DELETE FROM attendance_records WHERE attendance_id = ?`, [sessionId]);
+    await database.runAsync(`DELETE FROM attendance WHERE id = ?`, [sessionId]);
   });
 }
 
@@ -333,7 +540,7 @@ export async function getAttendanceHistory(classId: number): Promise<AttendanceW
   const result: AttendanceWithRecords[] = [];
   for (const session of sessions) {
     const records = await database.getAllAsync<any>(`
-      SELECT ar.*, s.name AS student_name
+      SELECT ar.id, ar.attendance_id, ar.student_id, ar.status, ar.confidence, ar.face_box, ar.face_image_uri, ar.quality, ar.manual, ar.created_at, s.name AS student_name
       FROM attendance_records ar
       LEFT JOIN students s ON s.id = ar.student_id
       WHERE ar.attendance_id = ?
@@ -408,6 +615,7 @@ function mapClassWithStats(row: any): ClassWithStats {
     studentCount: row.student_count ?? 0,
     enrolledCount: row.enrolled_count ?? 0,
     lastAttendance: row.last_attendance ?? undefined,
+    todaySessionId: row.today_session_id ?? undefined,
   };
 }
 
@@ -420,6 +628,7 @@ function mapStudent(row: any): Student {
     studentId: row.student_id,
     isEnrolled: row.is_enrolled === 1,
     enrolledAt: row.enrolled_at,
+    photoUri: row.photo_uri ?? undefined,
   };
 }
 
@@ -459,6 +668,8 @@ function mapRecord(row: any): AttendanceRecord {
     confidence: row.confidence,
     faceBox: row.face_box,
     faceImageUri: row.face_image_uri,
+    quality: row.quality ?? undefined,
+    manual: row.manual === 1,
     createdAt: row.created_at,
   };
 }

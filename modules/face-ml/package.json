@@ -5,7 +5,7 @@
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "scripts": {
-    "build": "expo-module build"
+    "build": "node init && expo-module build"
   },
   "peerDependencies": {
     "expo": "*",

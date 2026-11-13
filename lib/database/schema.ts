@@ -16,6 +16,8 @@ export interface Student {
   studentId?: string;
   enrolledAt?: string;
   isEnrolled: boolean;
+  /** Face thumbnail captured during enrollment (file:// URI). */
+  photoUri?: string;
 }
 
 export interface FaceEmbedding {
@@ -44,6 +46,8 @@ export interface AttendanceRecord {
   confidence?: number; // 0–1 cosine similarity score
   faceBox?: string; // JSON: {x, y, w, h} in the group photo
   faceImageUri?: string; // cropped face thumbnail
+  quality?: number; // AdaFace feature norm of the captured face
+  manual?: boolean; // marked by the teacher, not by recognition
   createdAt: string;
 }
 
@@ -63,4 +67,7 @@ export interface ClassWithStats extends Class {
   studentCount: number;
   enrolledCount: number;
   lastAttendance?: string;
+  /** Latest session recorded today, if any. */
+  todaySessionId?: number;
+  todayPresent?: number;
 }

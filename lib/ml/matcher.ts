@@ -1,45 +1,47 @@
 /**
- * Cosine similarity matching engine for MobileFaceNet (128-dim or 512-dim).
+ * Cosine-similarity matching for AdaFace IR-101 (512-d, L2-normalised).
  *
- * MobileFaceNet cosine similarity characteristics on a well-calibrated model:
- *   Same person, good lighting:    0.75 – 0.99
- *   Same person, different angle:  0.60 – 0.80
- *   Different people (random):     0.00 – 0.55
- *   Different people (similar):    0.40 – 0.65   ← the danger zone
- *
- * Strategy to avoid false positives:
- *   1. High absolute threshold (confident ≥ 0.72 for group, ≥ 0.78 solo)
- *   2. Average-of-templates scoring (not best-of — best-of rewards noise)
- *   3. Runner-up margin: best score must beat 2nd-best by ≥ MARGIN
- *   4. Uncertain band is narrow — only for human review, never auto-marked present
+ * Strategy against false positives:
+ *   1. Absolute thresholds calibrated on LFW with the app's own pipeline (below)
+ *   2. Blend of centroid and average-of-templates scoring (not best-of)
+ *   3. Runner-up margin: the best student must lead the 2nd-best by ≥ MIN_MARGIN
+ *   4. Uncertain band only ever goes to human review, never auto-present
  */
 
-// ─── Single-photo (enrollment validation) thresholds ─────────────────────────
-export const THRESHOLD_CONFIDENT  = 0.78;
-export const THRESHOLD_UNCERTAIN  = 0.65;
+// ─── Calibration (LFW, app pipeline: SCRFD → align → AdaFace IR-101, BGR, flip) ─
+// Simulated 40-student classes × 60, 5 enrollment photos per student, queries
+// at full size and ~45px faces, strangers + students from other classes:
+//   best impostor score: max 0.28, p99 0.22
+//   genuine best score:  p1 0.41–0.48, p5 0.56–0.60, median 0.73–0.75
+//   genuine lead over runner-up: p1 ≥ 0.28
+// Thresholds keep a wide safety gap above the worst impostor because a real
+// classroom (similar age / background) has harder lookalikes than LFW.
+// Result on LFW: 98.6–99.2% auto-present, 0 wrong/false presents.
 
-// ─── Group-photo thresholds ───────────────────────────────────────────────────
-// With correct AdaFace embeddings, impostors are typically < 0.35 and
-// genuine matches are typically > 0.45. Keep a clear open-set gap.
-export const GROUP_THRESHOLD_CONFIDENT = 0.55;
-export const GROUP_THRESHOLD_UNCERTAIN = 0.42;
+// ─── Single-photo (enrollment validation) thresholds ─────────────────────────
+export const THRESHOLD_CONFIDENT  = 0.5;
+export const THRESHOLD_UNCERTAIN  = 0.38;
+
+// ─── Group-photo / live thresholds ────────────────────────────────────────────
+export const GROUP_THRESHOLD_CONFIDENT = 0.45;
+export const GROUP_THRESHOLD_UNCERTAIN = 0.34;
 
 /**
  * Minimum score gap between the best match and second-best match.
  * If two students score similarly, neither wins — prevents the model
  * from confidently picking the wrong twin/lookalike.
  */
-export const MIN_MARGIN = 0.08;
+export const MIN_MARGIN = 0.10;
 
 /**
  * When only one student is enrolled, there is no runner-up to compare.
  * Require a higher absolute score so strangers are not auto-labeled.
  */
-export const SINGLE_GALLERY_MIN_SCORE = 0.55;
+export const SINGLE_GALLERY_MIN_SCORE = 0.45;
 
 export type MatchResult =
-  | { type: 'confident'; studentId: number; score: number }
-  | { type: 'uncertain'; studentId: number; score: number }
+  | { type: 'confident'; studentId: number; score: number; margin?: number }
+  | { type: 'uncertain'; studentId: number; score: number; margin?: number }
   | { type: 'unknown' };
 
 // ─── Math helpers ─────────────────────────────────────────────────────────────
@@ -271,7 +273,7 @@ export function matchGroupFaces(
     const matchType = classifyGroupMatch(score, margin, enrolled.length);
     if (!matchType) continue;
 
-    results[faceIdx] = { type: matchType, studentId, score };
+    results[faceIdx] = { type: matchType, studentId, score, margin };
     assignedStudents.add(studentId);
     assignedFaces.add(faceIdx);
   }

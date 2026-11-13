@@ -1,387 +1,349 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Animated,
-  Dimensions,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+/**
+ * Hands-free face setup. The camera captures automatically when the face is
+ * sharp, close enough and in the requested pose — no shutter button. Five
+ * varied captures (straight, both sides, chin tilt, natural) make the stored
+ * templates robust to how students actually sit in class.
+ */
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Animated, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Haptics from 'expo-haptics';
+import { useKeepAwake } from 'expo-keep-awake';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import {
-  getStudentById,
-  saveFaceEmbedding,
-  markStudentEnrolled,
-  deleteEmbeddingsForStudent,
-} from '@/lib/database/db';
-import { validateCapture, initMLModels } from '@/lib/ml/FaceMLClient';
+import { getAllEmbeddingsForClass, getStudentById, getStudentsForClass, saveEnrollment } from '@/lib/database/db';
 import type { Student } from '@/lib/database/schema';
-import { Colors, Spacing, Radius, Typography } from '@/constants/theme';
+import { analyzeEnrollmentCapture, initMLModels } from '@/lib/ml/FaceMLClient';
+import { averageEmbeddings, buildEnrolledTemplates, cosineSimilarity } from '@/lib/ml/matcher';
+import { deleteFiles, persistFaceImage } from '@/lib/files';
+import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { Avatar, Button, IconButton } from '@/components/kit';
+import type { Landmark } from '@/modules/face-ml/index';
 
-const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+type Pose = { yaw: number; pitch: number };
+type Capture = { embedding: number[]; quality?: number; thumbUri?: string; pose: Pose };
 
-const CAPTURE_ANGLES = [
-  { label: 'Look straight', icon: 'scan-outline' as const, hint: 'Face the camera directly' },
-  { label: 'Slight left', icon: 'arrow-back-outline' as const, hint: 'Turn your face slightly left' },
-  { label: 'Slight right', icon: 'arrow-forward-outline' as const, hint: 'Turn your face slightly right' },
-  { label: 'Look up/down', icon: 'swap-vertical-outline' as const, hint: 'Tilt your head slightly' },
-  { label: 'Natural expression', icon: 'happy-outline' as const, hint: 'Relax and smile naturally' },
+const STEPS = [
+  { title: 'Look straight at the camera', icon: 'scan-outline' as const },
+  { title: 'Turn head slightly to one side', icon: 'arrow-back-outline' as const },
+  { title: 'Now slightly to the other side', icon: 'arrow-forward-outline' as const },
+  { title: 'Tilt chin a little up or down', icon: 'swap-vertical-outline' as const },
+  { title: 'Relax — natural expression', icon: 'happy-outline' as const },
 ];
+const STEP_TIMEOUT_MS = 3500;
+const SAME_PERSON_MIN = 0.32;
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+function poseOf(lm?: Landmark[]): Pose | null {
+  if (!lm || lm.length < 3) return null;
+  const [le, re, nose] = lm;
+  const mx = (le.x + re.x) / 2;
+  const my = (le.y + re.y) / 2;
+  const d = Math.hypot(re.x - le.x, re.y - le.y);
+  if (d < 1) return null;
+  return { yaw: (nose.x - mx) / d, pitch: (nose.y - my) / d };
+}
+
+function poseOk(step: number, pose: Pose, caps: Capture[]): string | null {
+  switch (step) {
+    case 0: return Math.abs(pose.yaw) < 0.15 ? null : 'Face the camera directly';
+    case 1: return Math.abs(pose.yaw) >= 0.12 ? null : 'Turn a little more';
+    case 2: {
+      const first = caps[1]?.pose.yaw ?? 0;
+      return pose.yaw * Math.sign(first || 1) <= -0.12 ? null : 'Other side, please';
+    }
+    case 3: {
+      const base = caps[0]?.pose.pitch ?? pose.pitch;
+      return Math.abs(pose.pitch - base) >= 0.07 ? null : 'Tilt chin a bit more';
+    }
+    default: return null;
+  }
+}
+
+const HINTS: Record<string, string> = {
+  no_face: 'Looking for a face…',
+  multiple: 'Only one person in frame, please',
+  too_small: 'Move a little closer',
+  blurry: 'Hold steady…',
+};
 
 export default function EnrollScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  useKeepAwake();
+  const { id, queue } = useLocalSearchParams<{ id: string; queue?: string }>();
   const studentId = Number(id);
   const router = useRouter();
-
+  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
 
   const [student, setStudent] = useState<Student | null>(null);
-  const [captureIndex, setCaptureIndex] = useState(0);
-  const [capturing, setCapturing] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [capturedCount, setCapturedCount] = useState(0);
-  const [done, setDone] = useState(false);
-  const [modelsLoading, setModelsLoading] = useState(true);
+  const [ready, setReady] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [facing, setFacing] = useState<'back' | 'front'>('back');
+  const [step, setStep] = useState(0);
+  const [hint, setHint] = useState('Getting ready…');
+  const [good, setGood] = useState(false);
+  const [done, setDone] = useState<{ photoUri?: string; lookalike?: string } | null>(null);
+  const [next, setNext] = useState<{ id: number; name: string } | null>(null);
+  const [countdown, setCountdown] = useState<number | null>(null);
 
-  // Animation for capture feedback
-  const flashAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const caps = useRef<Capture[]>([]);
+  const active = useRef(false);
+  const forceRef = useRef(false);
+  const flash = useRef(new Animated.Value(0)).current;
+  const pulse = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    getStudentById(studentId).then(setStudent).catch(console.error);
-    // Clear any partial enrollments on mount
-    deleteEmbeddingsForStudent(studentId).catch(() => {});
-    initMLModels()
-      .catch((e) => setErrorMsg(e.message ?? 'Failed to load face models'))
-      .finally(() => setModelsLoading(false));
+    let cancelled = false;
+    Promise.all([getStudentById(studentId), initMLModels()])
+      .then(([s]) => { if (!cancelled) { setStudent(s); setReady(true); } })
+      .catch(e => setHint(e?.message ?? 'Could not load face engine'));
+    return () => { cancelled = true; active.current = false; };
   }, [studentId]);
 
-  const flashCapture = useCallback(() => {
-    flashAnim.setValue(1);
-    Animated.timing(flashAnim, { toValue: 0, duration: 400, useNativeDriver: true }).start();
+  const accept = useCallback((c: Capture) => {
+    caps.current.push(c);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    flash.setValue(0.85);
+    Animated.timing(flash, { toValue: 0, duration: 380, useNativeDriver: true }).start();
+    pulse.setValue(0.94);
+    Animated.spring(pulse, { toValue: 1, useNativeDriver: true, speed: 14, bounciness: 12 }).start();
+  }, [flash, pulse]);
 
-    scaleAnim.setValue(0.95);
-    Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 200, friction: 8 }).start();
-  }, [flashAnim, scaleAnim]);
+  const complete = useCallback(async () => {
+    const all = caps.current;
+    const photoUri = await persistFaceImage(all[0]?.thumbUri, `student-${studentId}`);
+    deleteFiles(all.map(c => c.thumbUri));
+    await saveEnrollment(studentId, all.map(c => ({ embedding: c.embedding, quality: c.quality })), photoUri);
 
-  const handleCapture = useCallback(async () => {
-    if (!cameraRef.current || capturing || processing) return;
-    setCapturing(true);
-    setErrorMsg(null);
-
+    // Lookalike / duplicate check against the rest of the class.
+    let lookalike: string | undefined;
+    let upcoming: { id: number; name: string } | null = null;
     try {
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.85,
-        skipProcessing: false,
-      });
-
-      if (!photo) throw new Error('Failed to capture photo');
-      setCapturing(false);
-      setProcessing(true);
-
-      const result = await validateCapture(photo.uri);
-
-      if (!result.isValid || !result.embedding) {
-        setErrorMsg(result.errorMessage ?? 'Invalid photo. Please try again.');
-        setProcessing(false);
-        return;
+      const s = await getStudentById(studentId);
+      const [others, classmates] = await Promise.all([getAllEmbeddingsForClass(s.classId), getStudentsForClass(s.classId)]);
+      const mine = averageEmbeddings(all.map(c => c.embedding));
+      const templates = buildEnrolledTemplates(others.filter(o => o.studentId !== studentId && o.source === 'enroll' && o.embedding.length === mine.length));
+      let best = { id: -1, score: 0 };
+      for (const t of templates) {
+        const sc = cosineSimilarity(mine, t.centroid);
+        if (sc > best.score) best = { id: t.studentId, score: sc };
       }
-
-      // Save embedding
-      await saveFaceEmbedding(studentId, result.embedding, captureIndex);
-      flashCapture();
-
-      const nextIndex = captureIndex + 1;
-      const newCount = capturedCount + 1;
-      setCapturedCount(newCount);
-
-      if (nextIndex >= CAPTURE_ANGLES.length) {
-        // All 5 captured
-        await markStudentEnrolled(studentId);
-        setDone(true);
-      } else {
-        setCaptureIndex(nextIndex);
+      if (best.score > 0.45) lookalike = classmates.find(c => c.id === best.id)?.name;
+      if (queue) {
+        const n = classmates.find(c => !c.isEnrolled && c.id !== studentId);
+        if (n) upcoming = { id: n.id, name: n.name };
       }
-    } catch (e: any) {
-      setErrorMsg(e.message ?? 'Capture failed. Please try again.');
-    } finally {
-      setCapturing(false);
-      setProcessing(false);
+    } catch {}
+    setNext(upcoming);
+    setDone({ photoUri, lookalike });
+    if (upcoming && !lookalike) setCountdown(3);
+  }, [queue, studentId]);
+
+  const runLoop = useCallback(async () => {
+    let stepStartedValidAt: number | null = null;
+    let current = caps.current.length;
+    while (active.current && current < STEPS.length) {
+      const cam = cameraRef.current;
+      if (!cam) break;
+      try {
+        const photo = await cam.takePictureAsync({ quality: 0.75, shutterSound: false });
+        if (!photo?.uri || !active.current) break;
+        const r = await analyzeEnrollmentCapture(photo.uri);
+        if (r.reason !== 'ok' || !r.embedding) {
+          setGood(false);
+          setHint(HINTS[r.reason] ?? 'Adjusting…');
+          if (r.thumbUri) deleteFiles([r.thumbUri]);
+          continue;
+        }
+        const lmPose = poseOf(r.landmarks) ?? { yaw: 0, pitch: 0.5 };
+        const pose = { yaw: r.yaw ?? lmPose.yaw, pitch: lmPose.pitch };
+        if (caps.current.length) {
+          const centroid = averageEmbeddings(caps.current.map(c => c.embedding));
+          if (cosineSimilarity(r.embedding, centroid) < SAME_PERSON_MIN) {
+            setGood(false);
+            setHint(`Keep ${student?.name.split(' ')[0] ?? 'the same student'} in frame`);
+            deleteFiles([r.thumbUri]);
+            continue;
+          }
+        }
+        stepStartedValidAt ??= Date.now();
+        const problem = poseOk(current, pose, caps.current);
+        const timedOut = Date.now() - stepStartedValidAt > STEP_TIMEOUT_MS;
+        if (problem && !timedOut && !forceRef.current) {
+          setGood(true);
+          setHint(problem);
+          deleteFiles([r.thumbUri]);
+          continue;
+        }
+        forceRef.current = false;
+        accept({ embedding: r.embedding, quality: r.quality, thumbUri: r.thumbUri, pose });
+        current = caps.current.length;
+        stepStartedValidAt = null;
+        setStep(current);
+        setHint(current < STEPS.length ? 'Got it' : 'Saving…');
+        await sleep(450);
+      } catch (e: any) {
+        setHint(e?.message ?? 'Retrying…');
+        await sleep(400);
+      }
     }
-  }, [cameraRef, capturing, processing, captureIndex, capturedCount, studentId, flashCapture]);
+    if (active.current && caps.current.length >= STEPS.length) {
+      active.current = false;
+      await complete();
+    }
+  }, [accept, complete, student]);
 
-  if (!permission) {
-    return <View style={styles.container}><ActivityIndicator color={Colors.primary} /></View>;
-  }
+  useEffect(() => {
+    const run = ready && cameraReady && !!permission?.granted && !done;
+    if (run && !active.current) {
+      active.current = true;
+      runLoop();
+    }
+    if (!run) active.current = false;
+  }, [ready, cameraReady, permission?.granted, done, runLoop]);
 
+  // Auto-advance to the next student in the queue.
+  useEffect(() => {
+    if (countdown == null || !next) return;
+    if (countdown === 0) {
+      router.replace({ pathname: '/student/[id]/enroll', params: { id: String(next.id), queue: '1' } });
+      return;
+    }
+    const t = setTimeout(() => setCountdown(c => (c == null ? c : c - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [countdown, next, router]);
+
+  if (!permission) return <View style={styles.black} />;
   if (!permission.granted) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.permissionScreen}>
-          <View style={styles.permissionIcon}><Ionicons name="camera-outline" size={30} color={Colors.primaryLight} /></View>
-          <Text style={styles.permissionTitle}>Camera Permission Required</Text>
-          <Text style={styles.permissionText}>
-            Face enrollment requires camera access to capture your face.
-          </Text>
-          <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
-            <Text style={styles.permissionButtonText}>Allow Camera</Text>
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
+      <View style={[styles.black, styles.center]}>
+        <Text style={styles.permTitle}>Camera access needed</Text>
+        <Text style={styles.permBody}>Face setup takes 5 quick automatic captures. Everything stays on this phone.</Text>
+        <Button title="Allow camera" variant="inverse" onPress={requestPermission} style={{ alignSelf: 'stretch' }} />
+        <Button title="Not now" variant="ghost" onPress={() => router.back()} style={{ alignSelf: 'stretch' }} />
+      </View>
     );
   }
 
   if (done) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.successScreen}>
-          <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-            <View style={styles.successIcon}><Ionicons name="checkmark" size={38} color={Colors.bg} /></View>
-          </Animated.View>
-          <Text style={styles.successTitle}>Enrollment Complete!</Text>
-          <Text style={styles.successName}>{student?.name}</Text>
-          <Text style={styles.successText}>
-            5 face captures recorded successfully. This student can now be recognized during attendance scans.
-          </Text>
-          <TouchableOpacity
-            id="btn-done-enrollment"
-            style={styles.doneButton}
-            onPress={() => router.back()}
-          >
-            <Text style={styles.doneButtonText}>Done</Text>
-          </TouchableOpacity>
+      <View style={[styles.white, { paddingTop: insets.top + 40, paddingBottom: insets.bottom + 20 }]}>
+        <View style={styles.doneBody}>
+          <View>
+            <Avatar name={student?.name} uri={done.photoUri} size={132} seed={studentId} ring={Colors.accent} />
+            <View style={styles.doneCheck}><Ionicons name="checkmark" size={22} color="#fff" /></View>
+          </View>
+          <Text style={styles.doneTitle}>{student?.name}</Text>
+          <Text style={styles.doneSub}>Face setup complete. They’ll be recognised automatically in scans.</Text>
+          {done.lookalike && (
+            <View style={styles.warn}>
+              <Ionicons name="alert-circle" size={18} color={Colors.warning} />
+              <Text style={styles.warnText}>Looks very similar to {done.lookalike}. If it’s the same person, remove the duplicate; otherwise you’re fine.</Text>
+            </View>
+          )}
         </View>
-      </SafeAreaView>
+        <View style={{ paddingHorizontal: Spacing.lg, gap: 6 }}>
+          {next ? (
+            <>
+              <Button
+                title={countdown != null && countdown > 0 ? `Next: ${next.name} (${countdown})` : `Next: ${next.name}`}
+                iconRight="arrow-forward"
+                onPress={() => router.replace({ pathname: '/student/[id]/enroll', params: { id: String(next.id), queue: '1' } })}
+              />
+              <Button title="Stop here" variant="ghost" size="md" onPress={() => { setCountdown(null); router.back(); }} />
+            </>
+          ) : (
+            <Button title="Done" onPress={() => router.back()} />
+          )}
+        </View>
+      </View>
     );
   }
 
-  const angle = CAPTURE_ANGLES[captureIndex];
-
-  if (modelsLoading) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.permissionScreen}>
-          <ActivityIndicator color={Colors.primary} size="large" />
-          <Text style={[styles.permissionTitle, { marginTop: Spacing.lg }]}>Loading face models...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  const ovalW = width * 0.66;
+  const ovalH = ovalW * 1.3;
+  const s = STEPS[Math.min(step, STEPS.length - 1)];
 
   return (
-    <View style={styles.container}>
-      {/* Camera */}
+    <View style={styles.black}>
       <CameraView
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
-        facing="front"
+        facing={facing}
+        animateShutter={false}
+        onCameraReady={() => setCameraReady(true)}
       />
+      <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: '#fff', opacity: flash }]} />
 
-      {/* Flash overlay */}
-      <Animated.View
-        pointerEvents="none"
-        style={[StyleSheet.absoluteFill, { backgroundColor: 'white', opacity: flashAnim }]}
-      />
-
-      {/* Face guide oval */}
-      <View style={styles.faceGuideContainer} pointerEvents="none">
-        <View style={styles.faceOval} />
+      <View style={styles.ovalWrap} pointerEvents="none">
+        <Animated.View
+          style={{
+            width: ovalW, height: ovalH, borderRadius: ovalW / 2, borderWidth: 4,
+            borderColor: good ? Colors.accent : 'rgba(255,255,255,0.85)',
+            transform: [{ scale: pulse }],
+          }}
+        />
       </View>
 
-      {/* Top info bar */}
-      <SafeAreaView style={styles.topBar}>
-        <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}><Ionicons name="close" size={21} color="#fff" /></TouchableOpacity>
-        <View style={styles.studentTag}>
-          <Text style={styles.studentTagText}>{student?.name ?? '...'}</Text>
-        </View>
-        {/* Progress dots */}
-        <View style={styles.progressDots}>
-          {CAPTURE_ANGLES.map((_, i) => (
-            <View
-              key={i}
-              style={[
-                styles.dot,
-                i < capturedCount && styles.dotDone,
-                i === captureIndex && styles.dotActive,
-              ]}
-            />
+      <View style={[styles.top, { paddingTop: insets.top + 8 }]}>
+        <IconButton icon="close" variant="glass" accessibilityLabel="Close" onPress={() => router.back()} />
+        <View style={styles.namePill}><Text style={styles.nameText} numberOfLines={1}>{student?.name ?? ''}</Text></View>
+        <IconButton icon="camera-reverse-outline" variant="glass" accessibilityLabel="Flip camera" onPress={() => setFacing(f => (f === 'back' ? 'front' : 'back'))} />
+      </View>
+
+      <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
+        <View style={styles.segments}>
+          {STEPS.map((_, i) => (
+            <View key={i} style={[styles.segment, i < step && { backgroundColor: Colors.accent }, i === step && { backgroundColor: '#000' }]} />
           ))}
         </View>
-        <Text style={styles.captureCount}>{capturedCount}/{CAPTURE_ANGLES.length}</Text>
-      </SafeAreaView>
-
-      {/* Bottom controls */}
-      <View style={styles.bottomPanel}>
-        {/* Angle instruction */}
-        <View style={styles.angleCard}>
-          <View style={styles.angleIcon}><Ionicons name={angle.icon} size={24} color={Colors.primaryLight} /></View>
-          <View>
-            <Text style={styles.angleLabel}>
-              Capture {captureIndex + 1} of {CAPTURE_ANGLES.length}: {angle.label}
-            </Text>
-            <Text style={styles.angleHint}>{angle.hint}</Text>
+        <View style={styles.stepRow}>
+          <View style={styles.stepIcon}><Ionicons name={s.icon} size={22} color="#000" /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.stepCount}>Step {Math.min(step + 1, STEPS.length)} of {STEPS.length}</Text>
+            <Text style={styles.stepTitle}>{s.title}</Text>
           </View>
         </View>
-
-        {/* Error message */}
-        {errorMsg ? (
-          <View style={styles.errorBanner}>
-            <Text style={styles.errorText}>⚠️ {errorMsg}</Text>
-          </View>
-        ) : null}
-
-        {/* Capture button */}
-        <TouchableOpacity
-          id={`btn-capture-${captureIndex}`}
-          style={styles.captureButton}
-          onPress={handleCapture}
-          disabled={capturing || processing}
-          activeOpacity={0.8}
-        >
-          {processing ? (
-            <ActivityIndicator color={Colors.primary} size="large" />
-          ) : (
-            <View style={[styles.captureInner, capturing && styles.captureInnerPressed]} />
-          )}
-        </TouchableOpacity>
-
-        <Text style={styles.tapHint}>
-          {processing ? 'Processing...' : 'Tap to capture'}
-        </Text>
+        <View style={styles.hintRow}>
+          {!ready || !cameraReady ? <ActivityIndicator size="small" color={Colors.textSecondary} /> : <Ionicons name={good ? 'checkmark-circle' : 'ellipse-outline'} size={16} color={good ? Colors.success : Colors.textMuted} />}
+          <Text style={styles.hintText}>{hint}</Text>
+          <Text style={styles.capture} onPress={() => { forceRef.current = true; Haptics.selectionAsync().catch(() => {}); }}>Capture now</Text>
+        </View>
+        <Text style={styles.auto}>Captures automatically — just hold the phone towards the student.</Text>
       </View>
     </View>
   );
 }
 
-const OVAL_W = SCREEN_W * 0.62;
-const OVAL_H = OVAL_W * 1.35;
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-
-  // Permission
-  permissionScreen: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, backgroundColor: Colors.bg },
-  permissionIcon: { width: 64, height: 64, borderRadius: Radius.xl, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.primary + '18', marginBottom: Spacing.lg },
-  permissionTitle: { ...Typography.heading2, color: Colors.textPrimary, marginBottom: Spacing.sm },
-  permissionText: { ...Typography.body, color: Colors.textSecondary, textAlign: 'center', marginBottom: Spacing.xl },
-  permissionButton: { backgroundColor: Colors.primary, borderRadius: Radius.lg, paddingVertical: Spacing.md, paddingHorizontal: Spacing.xl },
-  permissionButtonText: { ...Typography.heading3, color: Colors.textOnPrimary },
-
-  // Success
-  successScreen: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, backgroundColor: Colors.bg },
-  successIcon: { width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.accent, marginBottom: Spacing.lg },
-  successTitle: { ...Typography.heading2, color: Colors.textPrimary, marginBottom: Spacing.xs },
-  successName: { ...Typography.heading3, color: Colors.primary, marginBottom: Spacing.md },
-  successText: { ...Typography.body, color: Colors.textSecondary, textAlign: 'center', marginBottom: Spacing.xl },
-  doneButton: { backgroundColor: Colors.primary, borderRadius: Radius.lg, paddingVertical: Spacing.md, paddingHorizontal: Spacing.xxl },
-  doneButtonText: { ...Typography.heading3, color: Colors.textOnPrimary },
-
-  // Camera UI
-  faceGuideContainer: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  closeButton: { position: 'absolute', left: Spacing.lg, top: Spacing.md, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
-  faceOval: {
-    width: OVAL_W,
-    height: OVAL_H,
-    borderRadius: OVAL_W / 2,
-    borderWidth: 3,
-    borderColor: Colors.primary,
-    marginTop: -SCREEN_H * 0.05,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 12,
-  },
-
-  // Top
-  topBar: {
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.md,
-    alignItems: 'center',
-  },
-  studentTag: {
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    borderRadius: Radius.full,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    marginBottom: Spacing.sm,
-  },
-  studentTagText: { ...Typography.label, color: Colors.textPrimary },
-  progressDots: { flexDirection: 'row', gap: Spacing.xs },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: 'rgba(255,255,255,0.3)',
-  },
-  dotDone: { backgroundColor: Colors.accent },
-  dotActive: { backgroundColor: Colors.primary, width: 20 },
-  captureCount: { ...Typography.body, color: Colors.textPrimary, marginTop: Spacing.xs, fontWeight: '700' },
-
-  // Bottom
-  bottomPanel: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(13,13,26,0.92)',
-    padding: Spacing.lg,
-    paddingBottom: 40,
-    borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl,
-    alignItems: 'center',
-  },
-  angleCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    backgroundColor: Colors.bgElevated,
-    borderRadius: Radius.lg,
-    padding: Spacing.md,
-    width: '100%',
-    marginBottom: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  angleIcon: { width: 42, height: 42, borderRadius: Radius.md, backgroundColor: Colors.primary + '18', justifyContent: 'center', alignItems: 'center' },
-  angleLabel: { ...Typography.body, color: Colors.textPrimary, fontWeight: '600' },
-  angleHint: { ...Typography.bodySmall, color: Colors.textSecondary, marginTop: 2 },
-  errorBanner: {
-    backgroundColor: Colors.dangerBg,
-    borderRadius: Radius.md,
-    padding: Spacing.sm,
-    width: '100%',
-    marginBottom: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.danger + '40',
-  },
-  errorText: { ...Typography.bodySmall, color: Colors.danger, textAlign: 'center' },
-  captureButton: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 3,
-    borderColor: Colors.textPrimary,
-    marginBottom: Spacing.sm,
-  },
-  captureInner: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: Colors.textPrimary,
-  },
-  captureInnerPressed: { backgroundColor: Colors.textSecondary },
-  tapHint: { ...Typography.caption, color: Colors.textSecondary },
+  black: { flex: 1, backgroundColor: '#000' },
+  white: { flex: 1, backgroundColor: '#fff', justifyContent: 'space-between' },
+  center: { alignItems: 'center', justifyContent: 'center', padding: Spacing.lg },
+  permTitle: { ...Typography.heading1, color: '#fff', textAlign: 'center' },
+  permBody: { ...Typography.body, color: 'rgba(255,255,255,0.7)', textAlign: 'center', marginTop: 8, marginBottom: Spacing.xl },
+  ovalWrap: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', paddingBottom: 170 },
+  top: { position: 'absolute', top: 0, left: 0, right: 0, paddingHorizontal: Spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  namePill: { backgroundColor: Colors.glass, borderRadius: Radius.full, paddingHorizontal: 14, height: 36, justifyContent: 'center', maxWidth: '55%' },
+  nameText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  sheet: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#fff', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: Spacing.lg, paddingTop: 18 },
+  segments: { flexDirection: 'row', gap: 6, marginBottom: 16 },
+  segment: { flex: 1, height: 5, borderRadius: 3, backgroundColor: Colors.bgSubtle },
+  stepRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  stepIcon: { width: 48, height: 48, borderRadius: 24, backgroundColor: Colors.bgSubtle, alignItems: 'center', justifyContent: 'center' },
+  stepCount: { ...Typography.caption, color: Colors.textSecondary },
+  stepTitle: { ...Typography.heading3, color: '#000', marginTop: 1 },
+  hintRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 16, backgroundColor: Colors.bgElevated, borderRadius: Radius.md, paddingHorizontal: 12, height: 44 },
+  hintText: { ...Typography.bodySmall, color: Colors.textPrimary, fontWeight: '600', flex: 1 },
+  capture: { fontSize: 13, fontWeight: '700', color: Colors.textPrimary, textDecorationLine: 'underline' },
+  auto: { ...Typography.caption, color: Colors.textMuted, marginTop: 10, textAlign: 'center' },
+  doneBody: { alignItems: 'center', paddingHorizontal: Spacing.lg },
+  doneCheck: { position: 'absolute', right: 4, bottom: 4, width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.accent, borderWidth: 3, borderColor: '#fff', alignItems: 'center', justifyContent: 'center' },
+  doneTitle: { ...Typography.heading1, color: '#000', marginTop: Spacing.lg, textAlign: 'center' },
+  doneSub: { ...Typography.body, color: Colors.textSecondary, textAlign: 'center', marginTop: 6 },
+  warn: { flexDirection: 'row', gap: 8, backgroundColor: Colors.warningBg, borderRadius: Radius.md, padding: 12, marginTop: Spacing.lg },
+  warnText: { ...Typography.bodySmall, color: Colors.textPrimary, flex: 1 },
 });
