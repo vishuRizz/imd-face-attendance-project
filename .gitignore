@@ -53,4 +53,3 @@ gradle-*.zip
 # Native module build outputs (never commit)
 modules/**/android/build/
 modules/**/build/
-config.bat
